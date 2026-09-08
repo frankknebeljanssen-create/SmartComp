@@ -543,8 +543,11 @@ void SmartCompEditor::paint(juce::Graphics& g)
         // the name is. They used to be fixed at 54/53/107, tuned by hand for
         // "GOLD".
         juce::Font logoFont("Arial", 20.0f, juce::Font::bold);
-        const int wA = (int)std::ceil(logoFont.getStringWidthFloat(LOGO_A));
-        const int wB = (int)std::ceil(logoFont.getStringWidthFloat(LOGO_B));
+        // GlyphArrangement::getStringWidth rather than Font::getStringWidthFloat:
+        // the latter was removed in JUCE 9, and build_and_install.sh clones JUCE
+        // master, so a fresh checkout would not compile.
+        const int wA = (int)std::ceil(juce::GlyphArrangement::getStringWidth(logoFont, LOGO_A));
+        const int wB = (int)std::ceil(juce::GlyphArrangement::getStringWidth(logoFont, LOGO_B));
 
         int blockW = wA + wB + 6;
         logoRect = juce::Rectangle<int>(logoX, logoY, blockW, 36);
@@ -1092,9 +1095,9 @@ void SmartCompEditor::paint(juce::Graphics& g)
             juce::Font techFont("Arial", 13.0f, juce::Font::plain);
 
             int titleH2 = 22;
-            int descH2 = (int)std::ceil(descFont.getStringWidthFloat(tip.desc) / (float)tw2) * 18 + 4;
+            int descH2 = (int)std::ceil(juce::GlyphArrangement::getStringWidth(descFont, tip.desc) / (float)tw2) * 18 + 4;
             descH2 = juce::jmax(descH2, 36);
-            int techH2 = (int)std::ceil(techFont.getStringWidthFloat(tip.tech) / (float)tw2) * 16 + 4;
+            int techH2 = (int)std::ceil(juce::GlyphArrangement::getStringWidth(techFont, tip.tech) / (float)tw2) * 16 + 4;
             techH2 = juce::jmax(techH2, 20);
             int tipH = 14 + titleH2 + 8 + descH2 + 12 + techH2 + 14;
 

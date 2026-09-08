@@ -83,6 +83,23 @@ target_link_libraries(ui_shot
     PUBLIC
         juce::juce_recommended_config_flags)
 
+# Density probe. dsp_bench measures the DSP classes in isolation and reports
+# gain staging; this one drives the whole processor and asks the question the
+# knob's top end is supposed to answer — is the output actually a constant wall
+# at maximum compression, or does the short-term level still swing?
+juce_add_console_app(density_probe PRODUCT_NAME "density_probe")
+target_sources(density_probe PRIVATE tests/density_probe.cpp)
+target_compile_definitions(density_probe PUBLIC
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0)
+target_link_libraries(density_probe
+    PRIVATE
+        SmartComp
+        juce::juce_audio_utils
+        juce::juce_dsp
+    PUBLIC
+        juce::juce_recommended_config_flags)
+
 # Behavioural probe for AUTO. dsp_bench covers the DSP in isolation; this one
 # drives the whole processor and checks that the comp parameter converges on the
 # sweet-spot band, springs back after a manual drag, and recovers after being
