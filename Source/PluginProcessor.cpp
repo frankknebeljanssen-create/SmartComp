@@ -105,6 +105,7 @@ void SmartCompProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
     prevMixWet = 1.0f;
     prevOutTrimLin = 1.0f;
     smoothedMakeupGR = 0.0f;
+    matchResidualDB = 0.0f;
     dcBlockL = dcBlockR = dcPrevInL = dcPrevInR = 0.0f;
     prevBypassed = false;
 
@@ -603,6 +604,29 @@ void SmartCompProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Mi
                 makeupDB = juce::jlimit(0.0f, SLAM_MAKEUP_MAX_DB, makeupDB);
             }
             compressor.displayMakeupDB = makeupDB;   // for the before/after timeline
+
+            // Loudness of the compressor's output measured BEFORE makeup, so
+            // TRUE LEVEL does not have to discover the makeup through an 800 ms
+            // average behind a 0.5 dB / 50 ms slew. Makeup is a pure gain and
+            // the processor knows it exactly, so it is added analytically below
+            // and reaches the match instantly. Measuring through it was fine
+            // while makeup only ever undid the reduction; against the wall's
+            // drive it meant moving the knob into the top third overshot by
+            // about 22 dB for a second or two before the match caught up.
+            {
+                float kSumSq = 0.0f;
+                for (int i = 0; i < numSamples; ++i) {
+                    float mono = (left[i] + right[i]) * 0.5f;
+                    float kFiltered = applyBiquad(mono, kShelfOut, kShelfCoeffs);
+                    kFiltered = applyBiquad(kFiltered, kHPOut, kHPCoeffs);
+                    kSumSq += kFiltered * kFiltered;
+                }
+                const float blockMS = kSumSq / (float)numSamples;
+                const float sm = std::exp(-(float)numSamples / (float)(currentSampleRate * 0.800));
+                smoothedOutMS = smoothedOutMS * sm + blockMS * (1.0f - sm);
+                if (! std::isfinite(smoothedOutMS) || smoothedOutMS < 0.0f) smoothedOutMS = 0.0f;
+            }
+
             float makeupLin = std::pow(10.0f, makeupDB / 20.0f);
             {
                 float mkDelta = (makeupLin - prevMakeupLin) / (float)numSamples;
@@ -615,43 +639,47 @@ void SmartCompProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Mi
             }
             prevMakeupLin = makeupLin;
 
-            // 5. Measure output LUFS BEFORE gain match (prevents feedback loop)
+            // 5. Gain match, from the pre-makeup measurement above plus the
+            // makeup applied analytically.
             {
-                float preMatchKSumSq = 0;
-                for (int i = 0; i < numSamples; ++i) {
-                    float mono = (left[i] + right[i]) * 0.5f;
-                    float kFiltered = applyBiquad(mono, kShelfOut, kShelfCoeffs);
-                    kFiltered = applyBiquad(kFiltered, kHPOut, kHPCoeffs);
-                    preMatchKSumSq += kFiltered * kFiltered;
-                }
-                // Mean square, for the same reason as the input chain above
-                float preMatchMS = preMatchKSumSq / (float)numSamples;
+                const float preMakeupDB = (smoothedOutMS > 1.0e-20f)
+                                        ? 10.0f * std::log10(smoothedOutMS) : -100.0f;
+                smoothedOutLUFS = std::sqrt(smoothedOutMS) * makeupLin;   // for the UI
 
-                // Slow smoothing: 800ms — survives rapid knob movement
-                float outLufsSmooth = std::exp(-(float)numSamples / (float)(currentSampleRate * 0.800));
-                smoothedOutMS = smoothedOutMS * outLufsSmooth + preMatchMS * (1.0f - outLufsSmooth);
-                if (! std::isfinite(smoothedOutMS) || smoothedOutMS < 0.0f) smoothedOutMS = 0.0f;
-                smoothedOutLUFS = std::sqrt(smoothedOutMS);
-
-                // Only update offset when both signals are above noise floor
                 float inLevelDB = (smoothedInLUFS > 1e-10f) ? 20.0f * std::log10(smoothedInLUFS) : -100.0f;
-                float outLevelDB = (smoothedOutLUFS > 1e-10f) ? 20.0f * std::log10(smoothedOutLUFS) : -100.0f;
+                float outLevelDB = preMakeupDB + makeupDB;
                 if (inLevelDB > -50.0f && outLevelDB > -50.0f) {
-                    float diffDB = 20.0f * std::log10(smoothedInLUFS / smoothedOutLUFS);
-                    // jlimit cannot filter NaN — every comparison against it is
-                    // false, so it would pass both clamps below and end up
-                    // multiplied into the audio.
-                    if (! std::isfinite(diffDB)) diffDB = 0.0f;
-                    // -18 dB used to be far more than any gain the chain could
-                    // apply. The wall's drive reaches 36, so TRUE LEVEL ran out
-                    // of range exactly where it is needed: measured, the match
-                    // error at knob 36 grew to 12.0 dB on a quiet source.
-                    diffDB = juce::jlimit(-(SLAM_MAKEUP_MAX_DB), 6.0f, diffDB);
-                    // Slew-limit: max 0.5dB per 50ms — ultra-smooth even during fast knob turns
-                    float prevOffset = gainMatchOffsetDB.load();
-                    float blockTimeMs = (float)numSamples / (float)currentSampleRate * 1000.0f;
-                    float maxDelta = 0.5f * blockTimeMs / 50.0f;
-                    diffDB = juce::jlimit(prevOffset - maxDelta, prevOffset + maxDelta, diffDB);
+                    // Both large terms are known rather than measured. Makeup is
+                    // exact, and the compressor's own contribution is very nearly
+                    // the reduction it reports, so only the difference between
+                    // the two — a small, slowly varying correction for the fact
+                    // that one is K-weighted loudness and the other is a detector
+                    // reading — is left on the slow, slew-limited path.
+                    //
+                    // Leaving the whole residual on that path left a 9 dB dip for
+                    // about a second after a knob move into the top third: the
+                    // makeup half had already been subtracted while the half that
+                    // pays for it was still crawling at 0.5 dB / 50 ms.
+                    // The same crossfade the makeup's base term uses, so the two
+                    // cancel exactly and what is left for the match to apply is
+                    // the drive alone — which moves with the knob, not behind it.
+                    // Using the reported reduction here instead left a 16 dB dip
+                    // for a second: at the top the makeup's base is the law's
+                    // predicted reduction, which moves instantly, while the
+                    // reported one is a 500 ms average that does not.
+                    float baseResidualDB = smoothedMakeupGR
+                        + slam01 * (compressor.getStaticMakeupDB() - smoothedMakeupGR);
+                    const float fastResidualDB = juce::jlimit(0.0f, SLAM_MAKEUP_MAX_DB, baseResidualDB);
+                    float trimDB = (inLevelDB - preMakeupDB) - fastResidualDB;
+                    if (! std::isfinite(trimDB)) trimDB = 0.0f;
+                    trimDB = juce::jlimit(-12.0f, 12.0f, trimDB);
+                    const float blockTimeMs = (float)numSamples / (float)currentSampleRate * 1000.0f;
+                    const float maxDelta = 0.5f * blockTimeMs / 50.0f;
+                    matchResidualDB = juce::jlimit(matchResidualDB - maxDelta,
+                                                   matchResidualDB + maxDelta, trimDB);
+
+                    float diffDB = juce::jlimit(-(SLAM_MAKEUP_MAX_DB), 6.0f,
+                                                fastResidualDB + matchResidualDB - makeupDB);
                     gainMatchOffsetDB.store(diffDB);
                 } else {
                     float prevOffset = gainMatchOffsetDB.load();
@@ -662,12 +690,11 @@ void SmartCompProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Mi
 
             // 6. Apply gain match (HONEST mode) — per-sample interpolated with slew limit
             if (gainMatchEnabled.load() || honestMode.load()) {
+                // Already slew-limited where it is computed, and its makeup
+                // half is deliberately not — re-limiting it here would put the
+                // lag straight back. Per-sample interpolation below still keeps
+                // the gain change itself smooth.
                 float offsetDB = gainMatchOffsetDB.load();
-                // Slew-limit in dB: max 0.5dB per 50ms — completely inaudible
-                float prevDB = (prevOffsetLin > 1e-10f) ? 20.0f * std::log10(prevOffsetLin) : 0.0f;
-                float blockTimeMs = (float)numSamples / (float)currentSampleRate * 1000.0f;
-                float maxDeltaDB = 0.5f * blockTimeMs / 50.0f;
-                offsetDB = juce::jlimit(prevDB - maxDeltaDB, prevDB + maxDeltaDB, offsetDB);
                 float offsetLin = std::pow(10.0f, offsetDB / 20.0f);
                 float offDelta = (offsetLin - prevOffsetLin) / (float)numSamples;
                 float curOff = prevOffsetLin;

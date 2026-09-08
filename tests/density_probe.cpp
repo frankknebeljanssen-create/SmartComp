@@ -395,6 +395,62 @@ int main()
         std::printf ("\n");
     }
 
+    // TRUE LEVEL is the tool for judging whether a setting sounds better or
+    // merely louder, so it has to hold across the knob's whole travel. This
+    // walks the knob from 24 to 36 the way a hand would and watches the output.
+    {
+        std::vector<float> sL, sR; makeVocal (sL, sR, 26.0);
+        SmartCompProcessor p;
+        p.setPlayConfigDetails (2, 2, SR, BLOCK);
+        p.prepareToPlay (SR, BLOCK);
+        p.apvts.getParameter ("mix")->setValueNotifyingHost (1.0f);
+        p.apvts.getParameter ("gate")->setValueNotifyingHost (0.0f);
+        p.rideMode.store (false);
+        p.honestMode.store (true);          // TRUE LEVEL on
+        p.apvts.getParameter ("comp")->setValueNotifyingHost (24.0f / 36.0f);
+
+        std::vector<float> out;
+        juce::AudioBuffer<float> buf (2, BLOCK);
+        juce::MidiBuffer midi;
+        const double moveStart = 11.0, moveEnd = 12.0;   // a 400 ms hand movement, mid-section
+        int bi = 0;
+        for (int off = 0; off + BLOCK <= (int) sL.size(); off += BLOCK, ++bi) {
+            const double t = (double) off / SR;
+            const double u = juce::jlimit (0.0, 1.0, (t - moveStart) / (moveEnd - moveStart));
+            const float knob = (float) (24.0 + 12.0 * u);
+            p.apvts.getParameter ("comp")->setValueNotifyingHost (knob / 36.0f);
+            std::copy (sL.begin() + off, sL.begin() + off + BLOCK, buf.getWritePointer (0));
+            std::copy (sR.begin() + off, sR.begin() + off + BLOCK, buf.getWritePointer (1));
+            p.processBlock (buf, midi);
+            const float* o = buf.getReadPointer (0);
+            out.insert (out.end(), o, o + BLOCK);
+        }
+        auto rmsAt = [&] (double t0, double t1) {
+            double sum = 0.0; int n = 0;
+            for (int i = (int)(t0*SR); i < (int)(t1*SR) && i < (int) out.size(); ++i) { sum += (double) out[i]*out[i]; ++n; }
+            return dB (std::sqrt (sum / std::max (n, 1)));
+        };
+        // Two-second windows either side, because the test vocal's words vary by
+        // 10 dB on purpose: half-second snapshots measure the word pattern, not
+        // the plugin. The transient is reported separately as the worst quarter
+        // second anywhere in the three seconds after the move begins.
+        const double before = rmsAt (9.0, 11.0);
+        const double after  = rmsAt (13.0, 15.0);
+        double worst = 0.0, worstAt = 0.0;
+        for (double t = moveStart; t < moveStart + 3.0; t += 0.05) {
+            const double d = rmsAt (t, t + 0.25) - before;
+            if (std::abs (d) > std::abs (worst)) { worst = d; worstAt = t; }
+        }
+        std::printf ("TRUE LEVEL across a knob move 24 -> 36 (vocal, %.1fs hand movement)\n",
+                     moveEnd - moveStart);
+        std::printf ("  settled before  %7.2f dB\n", before);
+        std::printf ("  settled after   %7.2f dB   (%+6.2f — TRUE LEVEL should hold this near 0)\n",
+                     after, after - before);
+        std::printf ("  worst 250ms     %+6.2f dB at t=%.2fs after the move began\n",
+                     worst, worstAt - moveStart);
+        std::printf ("\n");
+    }
+
     // What the drive does to what is NOT the music. density_probe's other rows
     // cannot see this: analyse() drops every window more than 25 dB below the
     // loudest, which is exactly where room tone lives. The phrase/silence
