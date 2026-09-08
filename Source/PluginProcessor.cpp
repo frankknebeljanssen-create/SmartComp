@@ -1,6 +1,13 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
 
+// The wall at the top of the Compression knob. Everything here is multiplied by
+// RVoxCompressor::slamForAmount(), which is exactly zero at knob 24 and below.
+static constexpr float SLAM_REL_MS        = 25.0f;   // both release times converge here
+static constexpr float SLAM_TARGET_DB     = -11.0f;  // detector-domain level the wall sits at
+static constexpr float SLAM_MAX_DRIVE_DB  =  36.0f;  // most the drive may lift a quiet source
+static constexpr float SLAM_MAKEUP_MAX_DB =  60.0f;
+
 SmartCompProcessor::SmartCompProcessor()
     : AudioProcessor(BusesProperties()
                      .withInput("Input", juce::AudioChannelSet::stereo(), true)
@@ -503,8 +510,18 @@ void SmartCompProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Mi
         // Fast attack + RMS detector + lookahead = consonants preserved naturally
         float compAmt01 = juce::jlimit(0.0f, 1.0f, -compDB / 36.0f);
         float attackMs = 0.1f;  // near-instant, lookahead handles smoothing
+        const float slam01 = RVoxCompressor::slamForAmount(compAmt01);
         float relFastMs = 40.0f + (1.0f - compAmt01) * 40.0f;  // 40-80ms: tighter at high comp
         float relSlowMs = 400.0f + (1.0f - compAmt01) * 600.0f;  // 400-1000ms: shorter at high comp
+        // Both converge on 25 ms at the top. A long release is the intuitive
+        // anti-pump move and it is wrong here: once the makeup below stops
+        // putting the level back, the gain's job is to fill the troughs, not to
+        // sit still. Measured breakbeat/vocal spread at knob 36 with the rest of
+        // this in place: 400/40 ms -> 8.52 / 23.25, 40 ms -> 4.11 / 13.18,
+        // 25 ms -> 3.33 / 10.69, 20 ms -> 2.98 / 9.69. Monotone; 25 ms is where
+        // density stops being worth the distortion.
+        relFastMs += slam01 * (SLAM_REL_MS - relFastMs);
+        relSlowMs += slam01 * (SLAM_REL_MS - relSlowMs);
         float kneeW = 6.0f;
         compressor.setAttackTime(attackMs / 1000.0f);
         compressor.setReleaseTimes(relFastMs / 1000.0f, relSlowMs / 1000.0f);
@@ -517,7 +534,14 @@ void SmartCompProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Mi
 
         // Compressor — fixed 2x oversampling for alias-free gain modulation
         {
-            juce::dsp::AudioBlock<float> block(buffer);
+            // The channels we actually process, not the buffer's. On a mono bus
+            // `right` points at monoScratch, so an AudioBlock built from the
+            // buffer handed the compressor one channel and left the other side
+            // of the dual-mono chain unprocessed. Latent until now; the drive
+            // below makes it audible — measured, a mono bus landed at
+            // -24.47 dBFS against stereo's -10.23 at the same setting.
+            float* compChans[2] = { left, right };
+            juce::dsp::AudioBlock<float> block(compChans, 2, (size_t)numSamples);
             auto osBlock = compOS.processSamplesUp(block);
             int osN = (int)osBlock.getNumSamples();
             float* osL = osBlock.getChannelPointer(0);
@@ -547,6 +571,38 @@ void SmartCompProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Mi
                              + compressor.getGainReductionDB() * (1.0f - makeupSmooth);
             if (! std::isfinite(smoothedMakeupGR)) smoothedMakeupGR = 0.0f;
             float makeupDB = juce::jlimit(0.0f, 24.0f, smoothedMakeupGR);
+
+            // Above knob 24 the servo is crossfaded OUT, not added to. Following
+            // the delivered reduction restores the level and nothing more:
+            // measured, the net gain from compressor input to plugin output was
+            // -0.01 / 0.00 / +0.01 dB at knob 12 / 24 / 36, i.e. the chain was
+            // unity gain by construction at every setting. That is why the
+            // limiter reported exactly 0.00 dB of reduction everywhere — the
+            // ceiling was unreachable rather than merely unreached. Adding a
+            // drive on top of the servo is not enough either; the servo goes on
+            // stamping the compressor's own gain movement back onto the output.
+            //
+            // The replacement is open loop: what the compression law implies,
+            // plus whatever it takes to put the programme at SLAM_TARGET_DB.
+            // Referenced to the compressor's own programme level, so any source
+            // lands in the same place and the drive cannot drift away from the
+            // threshold. smoothedMakeupGR keeps updating above regardless, so
+            // turning the knob back down re-engages the servo from a live value.
+            // Not until the programme level has been measured: unprimed it
+            // reads -60 dB, which asks for the full 36 dB of drive, so pressing
+            // play used to lift the count-in by 36 dB and brickwall the first
+            // word for half a second before it settled.
+            if (slam01 > 0.0f && compressor.isProgrammeLevelPrimed())
+            {
+                const float progDB  = compressor.getProgrammeLevelDB();
+                const float driveDB = juce::jlimit(0.0f, SLAM_MAX_DRIVE_DB, SLAM_TARGET_DB - progDB)
+                                    * compressor.getDriveScale();
+                float wallDB = compressor.getStaticMakeupDB() + driveDB;
+                if (! std::isfinite(wallDB)) wallDB = 0.0f;
+                makeupDB += slam01 * (wallDB - makeupDB);
+                makeupDB = juce::jlimit(0.0f, SLAM_MAKEUP_MAX_DB, makeupDB);
+            }
+            compressor.displayMakeupDB = makeupDB;   // for the before/after timeline
             float makeupLin = std::pow(10.0f, makeupDB / 20.0f);
             {
                 float mkDelta = (makeupLin - prevMakeupLin) / (float)numSamples;
@@ -586,7 +642,11 @@ void SmartCompProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Mi
                     // false, so it would pass both clamps below and end up
                     // multiplied into the audio.
                     if (! std::isfinite(diffDB)) diffDB = 0.0f;
-                    diffDB = juce::jlimit(-18.0f, 6.0f, diffDB);
+                    // -18 dB used to be far more than any gain the chain could
+                    // apply. The wall's drive reaches 36, so TRUE LEVEL ran out
+                    // of range exactly where it is needed: measured, the match
+                    // error at knob 36 grew to 12.0 dB on a quiet source.
+                    diffDB = juce::jlimit(-(SLAM_MAKEUP_MAX_DB), 6.0f, diffDB);
                     // Slew-limit: max 0.5dB per 50ms — ultra-smooth even during fast knob turns
                     float prevOffset = gainMatchOffsetDB.load();
                     float blockTimeMs = (float)numSamples / (float)currentSampleRate * 1000.0f;
@@ -716,6 +776,18 @@ void SmartCompProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Mi
         if (! std::isfinite(dcBlockL) || ! std::isfinite(dcBlockR)
             || ! std::isfinite(dcPrevInL) || ! std::isfinite(dcPrevInR)) {
             dcBlockL = dcBlockR = dcPrevInL = dcPrevInR = 0.0f;
+        }
+        // The DC blocker runs after the safety clamp, so it was the last thing
+        // to touch the samples and could put them back over the ceiling. It
+        // never mattered while the chain was unity gain and nothing came near
+        // -0.3 dBFS; with the drive above it does. Only the processed path — a
+        // hot bypassed source still passes through untouched.
+        if (! bypassed) {
+            const float ceiling = std::pow(10.0f, CEILING_DB / 20.0f);
+            for (int i = 0; i < numSamples; ++i) {
+                left[i]  = juce::jlimit(-ceiling, ceiling, left[i]);
+                right[i] = juce::jlimit(-ceiling, ceiling, right[i]);
+            }
         }
     }
 

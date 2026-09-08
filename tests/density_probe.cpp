@@ -119,6 +119,29 @@ void makeVocal (std::vector<float>& L, std::vector<float>& R, double seconds)
     }
 }
 
+
+// A drum train with identical hits, constant level, no section changes. On this
+// source any gain movement at all is pumping by definition — there is nothing
+// for a leveler to level. That distinction matters: on real material the gain
+// SHOULD move to remove a level difference, and a swing metric alone cannot
+// tell that apart from breathing.
+void makeConstantDrums (std::vector<float>& L, std::vector<float>& R, double seconds)
+{
+    const int n = (int) (seconds * SR);
+    L.assign ((size_t) n, 0.0f); R.assign ((size_t) n, 0.0f);
+    Noise noise;
+    for (int i = 0; i < n; ++i)
+    {
+        const double t = (double) i / SR;
+        const double d = std::fmod (t, 0.5);           // one identical hit every 500 ms
+        double s = 0.0;
+        s += 0.9 * std::exp (-d / 0.055) * std::sin (2.0 * M_PI * 62.0 * d + 1.2);
+        s += 0.5 * std::exp (-d / 0.070) * noise.next();
+        s += 0.18 * std::sin (2.0 * M_PI * 82.0 * t);
+        L[(size_t) i] = R[(size_t) i] = (float) (s * lin (-9.0));
+    }
+}
+
 //==============================================================================
 struct Stats
 {
@@ -180,6 +203,43 @@ Stats analyse (const std::vector<float>& x, double skipSeconds, double floorRelD
 // which is exactly what "es pumpt noch" describes.
 struct Internals { double grMean = 0, grSD = 0, limMean = 0, gainSwing = 0; };
 
+// Applied gain per 10 ms window = output envelope minus input envelope; the
+// answer is the p95-p05 of that.
+//
+// Not all gain movement is pumping. A brickwall holding one transient down
+// moves the gain hard for a few milliseconds and that is the limiter working
+// as intended; breathing is the gain riding up and down at syllable and beat
+// rate. A 30 ms smoother separates them: it averages a single transient's
+// limiting away while leaving 2 Hz beat movement essentially intact (0.6 dB
+// down). 300 ms was tried first and was wrong the other way — its 0.5 Hz
+// corner removed the beat-rate breathing itself, so it scored a chain that
+// audibly pumped every beat as perfectly steady.
+double gainSwing (const std::vector<float>& src, const std::vector<float>& out)
+{
+    const int w = (int) (0.010 * SR);
+    const int start = (int) (3.0 * SR);
+    std::vector<double> g;
+    for (int q = start; q + w <= (int) out.size() && q + w <= (int) src.size(); q += w) {
+        double si = 0.0, so = 0.0;
+        for (int i = 0; i < w; ++i) {
+            si += (double) src[(size_t) (q + i)] * src[(size_t) (q + i)];
+            so += (double) out[(size_t) (q + i)] * out[(size_t) (q + i)];
+        }
+        si = std::sqrt (si / w); so = std::sqrt (so / w);
+        if (si > 1.0e-5) g.push_back (dB (so) - dB (si));
+    }
+    if (g.size() <= 8) return 0.0;
+
+    const double k = std::exp (-0.010 / 0.030);
+    double s = g.front();
+    std::vector<double> sm;
+    sm.reserve (g.size());
+    for (double v : g) { s = s * k + v * (1.0 - k); sm.push_back (s); }
+    sm.erase (sm.begin(), sm.begin() + (long) std::min<size_t> (sm.size() / 4, 200));
+    std::sort (sm.begin(), sm.end());
+    return sm[(size_t) (0.95 * (sm.size() - 1))] - sm[(size_t) (0.05 * (sm.size() - 1))];
+}
+
 Internals lastInternals;
 
 // Runs the real plugin end to end at a given knob position.
@@ -231,29 +291,7 @@ Stats runChain (const std::vector<float>& srcL, const std::vector<float>& srcR,
         lastInternals.grSD = std::sqrt (lastInternals.grSD / (double) grTrace.size());
     }
 
-    // Applied gain per 10 ms window = output envelope minus input envelope. Its
-    // p95-p05 is the pump depth. Measured on the stock code this is 11.3 dB on
-    // the breakbeat and 23.1 dB on the vocal at the knob's maximum — the gain
-    // is swinging by more than 20 dB, which is what "it still pumps" means.
-    {
-        const int w = (int) (0.010 * SR);
-        const int start = (int) (3.0 * SR);
-        std::vector<double> g;
-        for (int q = start; q + w <= (int) out.size() && q + w <= (int) srcL.size(); q += w) {
-            double si = 0.0, so = 0.0;
-            for (int i = 0; i < w; ++i) {
-                si += (double) srcL[(size_t) (q + i)] * srcL[(size_t) (q + i)];
-                so += (double) out[(size_t) (q + i)] * out[(size_t) (q + i)];
-            }
-            si = std::sqrt (si / w); so = std::sqrt (so / w);
-            if (si > 1.0e-5) g.push_back (dB (so) - dB (si));
-        }
-        if (g.size() > 8) {
-            std::sort (g.begin(), g.end());
-            lastInternals.gainSwing = g[(size_t) (0.95 * (g.size() - 1))]
-                                    - g[(size_t) (0.05 * (g.size() - 1))];
-        }
-    }
+    lastInternals.gainSwing = gainSwing (srcL, out);
 
     if (outCapture != nullptr) *outCapture = out;
     return analyse (out, 3.0);
@@ -268,12 +306,14 @@ Stats runChain (const std::vector<float>& srcL, const std::vector<float>& srcR,
 Stats refLimiterOnly (const std::vector<float>& srcL, const std::vector<float>& srcR, double driveDB)
 {
     std::vector<float> L (srcL), R (srcR);
+    lastInternals = {};
     const double g = lin (driveDB);
     for (size_t i = 0; i < L.size(); ++i) { L[i] = (float) (L[i] * g); R[i] = (float) (R[i] * g); }
     LookaheadLimiter limr;
     limr.prepare (SR, BLOCK);
     for (size_t off = 0; off + BLOCK <= L.size(); off += BLOCK)
         limr.process (L.data() + off, R.data() + off, BLOCK, -0.3f);
+    lastInternals.gainSwing = gainSwing (srcL, L);
     return analyse (L, 3.0);
 }
 
@@ -323,7 +363,7 @@ void runMaterial (const char* name,
         Stats s = runChain (sL, sR, knob);
         report (("comp " + std::to_string ((int) knob)).c_str(), s, &lastInternals);
     }
-    report ("ref: limiter +20dB", refLimiterOnly (sL, sR, 20.0));
+    { Stats r = refLimiterOnly (sL, sR, 20.0); report ("ref: limiter +20dB", r, &lastInternals); }
     report ("ref: ideal leveler", refIdealLeveler (sL, sR));
     std::printf ("\n");
 }
@@ -351,6 +391,52 @@ int main()
             Stats st = runChain (aL, aR, 36.0f);
             std::printf ("  source %+5.0f dB -> out mean %7.2f  peak %7.2f  pump %6.2f\n",
                          g, st.meanDB, st.peakDB, lastInternals.gainSwing);
+        }
+        std::printf ("\n");
+    }
+
+    // What the drive does to what is NOT the music. density_probe's other rows
+    // cannot see this: analyse() drops every window more than 25 dB below the
+    // loudest, which is exactly where room tone lives. The phrase/silence
+    // pattern here is deliberate — makeVocal never goes quiet between words, so
+    // it cannot show what happens in a real pause.
+    {
+        std::printf ("NOISE FLOOR IN PAUSES at comp 36 (4s phrase / 3s silence, over a room bed)\n");
+        Noise nz;
+        for (double bedDB : { -70.0, -60.0, -50.0 }) {
+            std::vector<float> sL, sR; makeVocal (sL, sR, 28.0);
+            const double bed = lin (bedDB);
+            for (size_t i = 0; i < sL.size(); ++i) {
+                const double t = (double) i / SR;
+                const double g = (std::fmod (t, 7.0) < 4.0) ? 1.0 : 0.0;   // 4s on, 3s silent
+                const float n = (float) (nz.next() * bed);
+                sL[i] = (float) (sL[i] * g) + n;
+                sR[i] = (float) (sR[i] * g) + n;
+            }
+            std::vector<float> out;
+            runChain (sL, sR, 36.0f, &out);
+            auto rmsAt = [&] (double t0, double t1) {
+                double sum = 0.0; int n = 0;
+                for (int i = (int)(t0*SR); i < (int)(t1*SR) && i < (int) out.size(); ++i) { sum += (double) out[i]*out[i]; ++n; }
+                return dB (std::sqrt (sum / std::max (n, 1)));
+            };
+            // Late in a silent stretch (t=19.5-20.5s is inside the third pause)
+            const double pause = rmsAt (19.5, 20.5);
+            const double words = rmsAt (15.0, 18.0);
+            std::printf ("  bed %+5.0f dB -> pause %7.2f dB (lift %+6.2f), words %7.2f dB, gap %5.2f dB\n",
+                         bedDB, pause, pause - bedDB, words, words - pause);
+        }
+        std::printf ("\n");
+    }
+
+    // The cleanest reading of the complaint: identical drum hits, constant level.
+    {
+        std::vector<float> sL, sR; makeConstantDrums (sL, sR, 20.0);
+        std::printf ("PUMP ON A CONSTANT-LEVEL SOURCE (identical hits — any swing is pumping)\n");
+        for (float knob : { 12.0f, 24.0f, 36.0f }) {
+            runChain (sL, sR, knob);
+            std::printf ("  comp %2d -> gain swing %6.2f dB   (compGR %5.2f, limGR %4.2f)\n",
+                         (int) knob, lastInternals.gainSwing, lastInternals.grMean, lastInternals.limMean);
         }
         std::printf ("\n");
     }

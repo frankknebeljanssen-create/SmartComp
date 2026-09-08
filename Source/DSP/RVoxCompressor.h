@@ -19,6 +19,31 @@ public:
     static constexpr int   GR_HISTORY_SIZE   = 2048;
     static constexpr float KNEE_WIDTH_MIN    = 6.0f;
     static constexpr float KNEE_WIDTH_MAX    = 16.0f;
+    // Where the knob stops being a compressor and starts being a wall. Below
+    // knob 24 every expression scaled by slam collapses to the value it always
+    // had, so the gentle range the plugin is built around — and the sweet spot
+    // AUTO aims at, near 11 — is bit-identical.
+    static constexpr float SLAM_START        = 24.0f / 36.0f;
+    static constexpr float SLAM_DEPTH_DB     = 6.0f;    // extra threshold depth at the top
+    static constexpr float SLAM_RMS_MS       = 15.0f;   // detector window at the top
+    static constexpr float RMS_MS_NORMAL     = 50.0f;   // what prepare() already uses
+    // How far below its own programme average the signal may fall before the
+    // wall's drive is withdrawn. Without this the drive is applied to whatever
+    // is there in a pause: measured, a -70 dBFS room bed came out at -19.1 dBFS,
+    // a 50.9 dB lift that left it 11 dB under the words. The Gate cannot cover
+    // this — it acts inside the compressor, upstream of the makeup, so even
+    // fully closed its 30 dB still loses to a 36 dB lift.
+    static constexpr float DRIVE_HOLD_DB     = 16.0f;   // full drive down to here
+    static constexpr float DRIVE_FADE_DB     = 10.0f;   // and none this much further down
+
+    // Smoothstep rather than a straight ramp, so the knob has no gradient
+    // discontinuity where the wall starts. Both files call this one function
+    // instead of keeping two copies of the law.
+    static float slamForAmount (float a)
+    {
+        const float w = juce::jlimit (0.0f, 1.0f, (a - SLAM_START) / (1.0f - SLAM_START));
+        return w * w * (3.0f - 2.0f * w);
+    }
 
     // Smooth attack mode: interpolates gain across the lookahead window
     bool smoothAttack = true;
@@ -71,6 +96,24 @@ public:
         // sustained quiet passages do not move the threshold much.
         autoLevelRiseCoeff = std::exp(-1.0f / (float(sr) * 0.800f));
         autoLevelFallCoeff = std::exp(-1.0f / (float(sr) * 3.000f));
+        // Fast to restore, slow to withdraw: a word must not be ducked on its
+        // way in, and a decaying tail must not be chopped on its way out.
+        driveRiseCoeff = std::exp(-1.0f / (float(sr) * 0.020f));
+        driveFallCoeff = std::exp(-1.0f / (float(sr) * 0.250f));
+        // The drive's own level reference. It follows the programme up in about
+        // a second and lets go over twenty, so a pause cannot drag it down.
+        // autoLevelDB alone will not do: it keeps updating on anything above
+        // -60 dBFS, so a -50 dBFS room bed pulled it down during a pause and the
+        // drive then normalised the room tone to speaking level — measured, the
+        // bed came out 0.94 dB below the words.
+        // A slow level for the gate to compare against. The compressor's own
+        // envelope is far too fast for this job: at 25 ms it drops between drum
+        // hits, so a gate driven from it closed on every gap in the music and
+        // put the level variation straight back — measured, the breakbeat spread
+        // stalled at 8.82 dB instead of 3.33.
+        driveLevelCoeff   = std::exp(-1.0f / (float(sr) * 0.400f));
+        driveRefRiseCoeff = std::exp(-1.0f / (float(sr) * 1.000f));
+        driveRefFallCoeff = std::exp(-1.0f / (float(sr) * 20.000f));
 
         delayBufferL.assign(lookahead + 1, 0.0f);
         delayBufferR.assign(lookahead + 1, 0.0f);
@@ -104,6 +147,10 @@ public:
         prevAppliedGainLin = 1.0f;
         detLowLP = 0.0f;
         autoLevelDB = -18.0f;
+        staticMakeupDB = 0.0f;
+        driveScale = 0.0f;
+        driveRefDB = -60.0f;
+        driveLevelDB = -60.0f;
         autoLevelPrimed = false;
         gateOpen = true;
         scHpfX1 = scHpfX2 = scHpfY1 = scHpfY2 = 0.0f;
@@ -149,6 +196,9 @@ public:
         scHpfA2 = (1.0f - alpha) / a0;
     }
 
+    // Set by the processor each block so the before/after timeline can show the
+    // real output level. Display only — nothing in the audio path reads it.
+    float displayMakeupDB = 0.0f;
     float userKneeWidth = 10.0f;
     float maxGainReductionDB = 36.0f;
     float ratioMultiplier = 1.0f; // Adjustable via ADV display dot (Y axis)
@@ -190,8 +240,11 @@ public:
             }
             gainReductionDB = 0.0f;
             prevGrDB = 0.0f;
+            staticMakeupDB = 0.0f;
             return;
         }
+
+        const float slam = slamForAmount(compAmount);
 
         // ===== AUTO THRESHOLD =====
         // The threshold sits a knob-controlled distance below a slow average of
@@ -209,7 +262,7 @@ public:
         //
         // autoLevelDB is measured from the detector, i.e. pre-compression, so it
         // cannot feed back from the gain being applied.
-        float depthDB = -6.0f + compAmount * 18.0f;
+        float depthDB = -6.0f + compAmount * 18.0f + slam * SLAM_DEPTH_DB;
         float thresholdDB = autoLevelDB - depthDB;
 
         float ratio = 1.0f + compAmount * compAmount * (MAX_RATIO - 1.0f);
@@ -217,6 +270,26 @@ public:
         float baseKneeDB = userKneeWidth;
         // RMS-dominant detection
         float peakBlend = 0.08f + compAmount * 0.12f;
+
+        // What the compression law implies in steady state. The makeup reads
+        // this above knob 24 instead of averaging the reduction it just
+        // delivered — a servo which, being the inverse of the compressor's own
+        // gain, made the whole chain unity gain by construction and left the
+        // limiter's ceiling permanently out of reach.
+        staticMakeupDB = std::max(0.0f, depthDB) * (1.0f - 1.0f / ratio);
+        if (! std::isfinite(staticMakeupDB)) staticMakeupDB = 0.0f;
+
+        // The 50 ms RMS window is what caps level control at about 1.6 Hz: it
+        // simply cannot see a syllable. That is the right character for gentle
+        // compression and the wrong one for a wall, so the window shortens with
+        // slam. Measured, this single change is what fixes the vocal — with the
+        // window left at 50 ms its spread lands at 19.69 dB instead of 10.69.
+        // At slam 0 the branch below takes the prepare()-time coefficient
+        // verbatim, so nothing below knob 24 moves by a bit.
+        const float rmsMsNow = RMS_MS_NORMAL + slam * (SLAM_RMS_MS - RMS_MS_NORMAL);
+        const float rmsC = (slam > 0.0f)
+                         ? std::exp(-1.0f / (float(sr) * rmsMsNow * 0.001f))
+                         : rmsCoeff;
 
         for (int i = 0; i < numSamples; ++i)
         {
@@ -258,7 +331,7 @@ public:
                 peakEnv = peakReleaseCoeff * peakEnv + (1.0f - peakReleaseCoeff) * monoAbs;
 
             float squared = monoAbs * monoAbs;
-            rmsSquaredSum = rmsCoeff * rmsSquaredSum + (1.0f - rmsCoeff) * squared;
+            rmsSquaredSum = rmsC * rmsSquaredSum + (1.0f - rmsC) * squared;
             float rmsLevel = std::sqrt(rmsSquaredSum);
 
             float detLevel = rmsLevel * (1.0f - peakBlend) + peakEnv * peakBlend;
@@ -297,6 +370,28 @@ public:
                 float compSlowdown = 1.0f + compAmount * 0.15f; // was 0.3 — now max 15% slower
                 rc = 1.0f - (1.0f - rc) / compSlowdown;
                 envDB = rc * envDB + (1.0f - rc) * detDB;
+            }
+
+            // How much of the wall's drive is currently earned. In a pause the
+            // envelope sits far below the programme average and there is nothing
+            // there worth lifting; during a word it is at or above it.
+            {
+                // The reference follows the programme while there IS programme,
+                // and freezes when there is not. Letting it follow unconditionally
+                // meant a pause dragged it down and the drive then normalised the
+                // room tone to speaking level; freezing it unconditionally meant a
+                // quiet section never got lifted and the 9 dB section step
+                // survived intact. Gating it on driveScale — which is itself a
+                // level test — separates the two: a section is a few dB down and
+                // keeps the drive, a pause is tens of dB down and loses it.
+                const float rc = (driveScale > 0.5f) ? driveRefRiseCoeff : 1.0f;
+                driveRefDB = rc * driveRefDB + (1.0f - rc) * autoLevelDB;
+                driveLevelDB = driveLevelCoeff * driveLevelDB + (1.0f - driveLevelCoeff) * detDB;
+                const float below = driveRefDB - driveLevelDB;
+                const float target = juce::jlimit(0.0f, 1.0f,
+                                                  (DRIVE_HOLD_DB - below) / DRIVE_FADE_DB + 1.0f);
+                const float c = (target < driveScale) ? driveFallCoeff : driveRiseCoeff;
+                driveScale = c * driveScale + (1.0f - c) * target;
             }
 
             // ===== ADAPTIVE KNEE =====
@@ -425,6 +520,13 @@ public:
     }
 
     float getGainReductionDB() const { return smoothGR; }
+    // The slow programme level the threshold is referenced to. The drive above
+    // knob 24 reads the same number, so drive and threshold cannot drift apart.
+    float getProgrammeLevelDB() const { return autoLevelPrimed ? driveRefDB : -60.0f; }
+    float getStaticMakeupDB()   const { return staticMakeupDB; }
+    // 0..1: how much of the drive the current material earns. See DRIVE_HOLD_DB.
+    float getDriveScale()       const { return driveScale; }
+    bool  isProgrammeLevelPrimed() const { return autoLevelPrimed; }
     // Gate state, already computed internally but not previously exposed —
     // needed to draw the threshold/attenuation on the IN meter.
     bool isGateOpen() const { return gateOpen; }
@@ -455,7 +557,10 @@ private:
                    && std::isfinite(envDB) && std::isfinite(expanderEnvDB)
                    && std::isfinite(smoothedGainDB) && std::isfinite(smoothedGainDB2)
                    && std::isfinite(prevAppliedGainLin) && std::isfinite(detLowLP)
-                   && std::isfinite(smoothExpanderGainDB) && std::isfinite(smoothGR));
+                   && std::isfinite(smoothExpanderGainDB) && std::isfinite(smoothGR)
+                   && std::isfinite(staticMakeupDB) && std::isfinite(driveScale)
+                   && std::isfinite(driveRefDB)
+                   && std::isfinite(driveLevelDB));
         if (! bad)
             bad = ! (std::isfinite(scHpfX1) && std::isfinite(scHpfX2)
                   && std::isfinite(scHpfY1) && std::isfinite(scHpfY2));
@@ -491,8 +596,13 @@ private:
     {
         grHistoryBlockAccum = std::max(grHistoryBlockAccum, grDB);
         inputHistoryBlockAccum = std::max(inputHistoryBlockAccum, inputDB);
-        // Output = input level minus gain reduction
-        float outDB = inputDB - grDB;
+        // Output = input, minus the reduction, plus the makeup that follows it.
+        // The makeup term used to be missing, which was harmless while makeup
+        // simply undid the reduction, but the wall's drive can add 20 dB or more
+        // on top: without it the "after" trace draws the signal collapsing to
+        // nothing at precisely the setting where the output is pinned at the
+        // ceiling. One block of lag, which is invisible on a timeline display.
+        float outDB = inputDB - grDB + displayMakeupDB;
         outputHistoryBlockAccum = std::max(outputHistoryBlockAccum, outDB);
         grHistorySampleCounter++;
         if (grHistorySampleCounter >= grHistorySamplesPerSlot) {
@@ -530,6 +640,13 @@ private:
     float autoLevelDB = -18.0f;
     bool  autoLevelPrimed = false;
     float autoLevelRiseCoeff = 0.0f, autoLevelFallCoeff = 0.0f;
+    float staticMakeupDB = 0.0f;
+    float driveScale = 0.0f;
+    float driveRiseCoeff = 0.0f, driveFallCoeff = 0.0f;
+    float driveRefDB = -60.0f;
+    float driveRefRiseCoeff = 0.0f, driveRefFallCoeff = 0.0f;
+    float driveLevelDB = -60.0f;
+    float driveLevelCoeff = 0.0f;
     float expanderEnvDB = -100.0f;
     float expanderReleaseCoeff = 0.0f;
     float gateOpenCoeff = 0.0f, gateCloseCoeff = 0.0f;
