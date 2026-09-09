@@ -42,7 +42,11 @@ drum loop this takes the short-term loudness spread from 14.2 dB in to 5.6 dB
 out with the peaks sitting on the ceiling. It is not subtle and is not meant to
 be — turn it down from there.
 
+![SmartComp at the top of the knob](docs/screenshot-wall.png)
+
 Below knob 24 none of that is active, so the gentle range is untouched by it.
+AUTO parks well below where it begins, so switch AUTO off to hear the top —
+otherwise the rubber band pulls the knob straight back out of it.
 
 ## Signal chain
 
@@ -148,7 +152,10 @@ event loop against a synthetic vocal, then saves what actually renders.
 
 ```bash
 cmake --build ~/Library/Caches/SmartComp-build --target ui_shot
+# at rest: AUTO on, knob snapped into the sweet spot
 open ~/Library/Caches/SmartComp-build/ui_shot_artefacts/Release/ui_shot.app --args /tmp/screenshot.png
+# a fixed knob position instead, with AUTO off so it stays there
+open ~/Library/Caches/SmartComp-build/ui_shot_artefacts/Release/ui_shot.app --args /tmp/wall.png 36
 ```
 
 ## Known limits

@@ -71,9 +71,19 @@ public:
 
     void initialise(const juce::String& commandLine) override
     {
+        // Second argument, optional: a fixed Compression value. Without it the
+        // knob is snapped into the sweet spot with AUTO engaged, which is the
+        // plugin at rest. With it, AUTO is switched off and the knob is pinned
+        // where asked — that is the only way to photograph the top of the
+        // range, since AUTO would pull the knob straight back out of it.
         auto args = juce::StringArray::fromTokens(commandLine, true);
         if (! args.isEmpty())
             outPath = args[0].unquoted();
+        if (args.size() > 1)
+        {
+            fixedComp = juce::jlimit(0.0f, 36.0f, args[1].getFloatValue());
+            useFixedComp = true;
+        }
 
         processor = std::make_unique<SmartCompProcessor>();
         processor->prepareToPlay(kSampleRate, kBlockSize);
@@ -82,12 +92,14 @@ public:
         // sweet-spot arc and GR meter both have something to show. The exact
         // knob position matters less than landing inside whatever range the
         // signal analysis converges on — see timerCallback.
-        processor->apvts.getParameter("comp")->setValueNotifyingHost(18.0f / 36.0f);
+        processor->apvts.getParameter("comp")->setValueNotifyingHost(
+            (useFixedComp ? fixedComp : 18.0f) / 36.0f);
         processor->apvts.getParameter("mix")->setValueNotifyingHost(1.0f);
 
-        // AUTO on for the screenshot: it is the plugin's headline feature, and
-        // the button state is only meaningful if it is shown engaged.
-        processor->rideMode.store(true);
+        // AUTO on for the default screenshot: it is the plugin's headline
+        // feature, and the button state is only meaningful if it is shown
+        // engaged. Off whenever a knob position was asked for.
+        processor->rideMode.store(! useFixedComp);
 
         editor.reset(processor->createEditor());
         editor->setVisible(true);
@@ -130,7 +142,7 @@ private:
         // range, not just the range to exist) has time to fade in before the
         // capture. Sweet-spot smoothing settles noticeably inside ~3s of
         // audio-time; this checks after that and adjusts once.
-        if (! snapped && ticks == snapTick)
+        if (! useFixedComp && ! snapped && ticks == snapTick)
         {
             const float low = processor->sweetSpotLow.load();
             const float high = processor->sweetSpotHigh.load();
@@ -159,6 +171,8 @@ private:
     VocalSignal signal;
     int ticks = 0;
     bool snapped = false;
+    bool useFixedComp = false;
+    float fixedComp = 0.0f;
     // 30 ticks/sec * 4 blocks * 512 samples / 44100 ~= 0.14s of audio-time per
     // tick. snapTick lands after ~3.5s of audio-time (enough for the sweet-spot
     // learn phase to settle), captureTick during the decay of an emphasized
