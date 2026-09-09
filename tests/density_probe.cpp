@@ -253,7 +253,8 @@ Internals lastInternals;
 
 // Runs the real plugin end to end at a given knob position.
 Stats runChain (const std::vector<float>& srcL, const std::vector<float>& srcR,
-                float compKnob, std::vector<float>* outCapture = nullptr)
+                float compKnob, std::vector<float>* outCapture = nullptr,
+                bool trueLevel = false)
 {
     SmartCompProcessor p;
     p.setPlayConfigDetails (2, 2, SR, BLOCK);
@@ -266,6 +267,7 @@ Stats runChain (const std::vector<float>& srcL, const std::vector<float>& srcR,
     p.apvts.getParameter ("inTrim")->setValueNotifyingHost (
         p.apvts.getParameter ("inTrim")->convertTo0to1 (0.0f));
     p.rideMode.store (false);   // manual: we are testing the knob at max
+    p.honestMode.store (trueLevel);
 
     std::vector<float> out;
     out.reserve (srcL.size());
@@ -619,6 +621,27 @@ int main()
             runChain (sL, sR, knob);
             std::printf ("  comp %2d -> gain swing %6.2f dB   (compGR %5.2f, limGR %4.2f)\n",
                          (int) knob, lastInternals.gainSwing, lastInternals.grMean, lastInternals.limMean);
+        }
+        std::printf ("\n");
+    }
+
+    // What does the TRUE LEVEL switch actually change? Its whole purpose is to
+    // hold perceived loudness while the knob moves, so if the loudness already
+    // holds without it there is nothing left for it to do.
+    {
+        std::printf ("TRUE LEVEL: what the switch is worth at each knob position\n");
+        std::printf ("  %-10s %20s %20s\n", "", "BREAKBEAT loudness", "VOCAL loudness");
+        std::printf ("  %-10s %9s %9s  %9s %9s\n", "", "off", "on", "off", "on");
+        std::vector<float> bL, bR, vL, vR;
+        makeBreakbeat (bL, bR, 24.0);
+        makeVocal (vL, vR, 24.0);
+        for (float knob : { 0.0f, 6.0f, 12.0f, 18.0f, 24.0f, 30.0f, 36.0f }) {
+            const double b0 = runChain (bL, bR, knob, nullptr, false).loudDB;
+            const double b1 = runChain (bL, bR, knob, nullptr, true ).loudDB;
+            const double v0 = runChain (vL, vR, knob, nullptr, false).loudDB;
+            const double v1 = runChain (vL, vR, knob, nullptr, true ).loudDB;
+            std::printf ("  comp %-5d %9.2f %9.2f  %9.2f %9.2f\n",
+                         (int) knob, b0, b1, v0, v1);
         }
         std::printf ("\n");
     }
