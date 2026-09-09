@@ -629,6 +629,90 @@ int main()
         std::printf ("\n");
     }
 
+    // Exactly the A/B a user performs: engage the plugin, switch TRUE LEVEL on,
+    // then hit Bypass. Both sides are measured over the SAME whole signal with
+    // no active-window selection, because selecting windows per side compares
+    // two different sets of windows and can invert the answer.
+    {
+        std::printf ("BYPASS A/B — processed with TRUE LEVEL on, against bypassed\n");
+        // Two yardsticks, because they disagree and the disagreement is the
+        // point. Ungated energy counts the pauses, and compression lifts those,
+        // so a correctly matched signal still reads louder by it. Gated energy
+        // drops blocks more than 10 dB below the mean and is what BS.1770 —
+        // and the ear — actually weighs.
+        auto wholeDB = [] (const std::vector<float>& x, double skip) {
+            double sum = 0.0; int n = 0;
+            for (int i = (int)(skip * SR); i < (int) x.size(); ++i) { sum += (double) x[i]*x[i]; ++n; }
+            return dB (std::sqrt (sum / std::max (n, 1)));
+        };
+        auto gatedDB = [] (const std::vector<float>& x, double skip) {
+            const int w = (int)(0.4 * SR);
+            std::vector<double> blocks;
+            for (int q = (int)(skip * SR); q + w <= (int) x.size(); q += w) {
+                double sum = 0.0;
+                for (int i = 0; i < w; ++i) sum += (double) x[q+i]*x[q+i];
+                blocks.push_back (sum / w);
+            }
+            if (blocks.empty()) return -100.0;
+            double mean = 0.0; for (double b : blocks) mean += b; mean /= blocks.size();
+            double gs = 0.0; int gn = 0;
+            for (double b : blocks) if (b > mean * 0.1) { gs += b; ++gn; }
+            return dB (std::sqrt (gs / std::max (gn, 1)));
+        };
+        auto render = [&] (const std::vector<float>& L, const std::vector<float>& R,
+                           float knob, bool trueLevel, bool bypass) {
+            SmartCompProcessor p;
+            p.setPlayConfigDetails (2, 2, SR, BLOCK);
+            p.prepareToPlay (SR, BLOCK);
+            p.apvts.getParameter ("mix")->setValueNotifyingHost (1.0f);
+            p.apvts.getParameter ("gate")->setValueNotifyingHost (0.0f);
+            p.apvts.getParameter ("comp")->setValueNotifyingHost (knob / 36.0f);
+            p.apvts.getParameter ("bypass")->setValueNotifyingHost (bypass ? 1.0f : 0.0f);
+            p.rideMode.store (false);
+            p.honestMode.store (trueLevel);
+            std::vector<float> out;
+            juce::AudioBuffer<float> buf (2, BLOCK);
+            juce::MidiBuffer midi;
+            for (int off = 0; off + BLOCK <= (int) L.size(); off += BLOCK) {
+                std::copy (L.begin() + off, L.begin() + off + BLOCK, buf.getWritePointer (0));
+                std::copy (R.begin() + off, R.begin() + off + BLOCK, buf.getWritePointer (1));
+                p.processBlock (buf, midi);
+                const float* o = buf.getReadPointer (0);
+                out.insert (out.end(), o, o + BLOCK);
+            }
+            return std::pair<double,double> { wholeDB (out, 6.0), gatedDB (out, 6.0) };
+        };
+        std::vector<float> bL, bR, vL, vR;
+        makeBreakbeat (bL, bR, 24.0);
+        makeVocal (vL, vR, 24.0);
+        // Across source levels too: the wall's drive is clamped at zero, so a
+        // source already louder than its target gets none of it while the
+        // compressor still takes its reduction out.
+        std::printf ("  %-16s %19s %19s\n", "", "ungated  TLon-byp", "gated  TLon-byp");
+        for (double g : { -12.0, 0.0, +9.0, +15.0 }) {
+            std::vector<float> aL (vL), aR (vR);
+            const double m = lin (g);
+            for (size_t i = 0; i < aL.size(); ++i) { aL[i] = (float)(aL[i]*m); aR[i] = (float)(aR[i]*m); }
+            const auto vb = render (aL, aR, 36.0f, false, true);
+            const auto v1 = render (aL, aR, 36.0f, true,  false);
+            std::printf ("  VO k36 src %+3.0f %10.2f %+8.2f %10.2f %+8.2f\n",
+                         g, v1.first, v1.first - vb.first, v1.second, v1.second - vb.second);
+        }
+        std::printf ("\n");
+        std::printf ("  %-16s %19s %19s\n", "", "ungated  TLon-byp", "gated  TLon-byp");
+        for (float knob : { 12.0f, 24.0f, 36.0f }) {
+            const auto bb = render (bL, bR, knob, false, true);
+            const auto b1 = render (bL, bR, knob, true,  false);
+            std::printf ("  BB comp %-8d %10.2f %+8.2f %10.2f %+8.2f\n",
+                         (int) knob, b1.first, b1.first - bb.first, b1.second, b1.second - bb.second);
+            const auto vb = render (vL, vR, knob, false, true);
+            const auto v1 = render (vL, vR, knob, true,  false);
+            std::printf ("  VO comp %-8d %10.2f %+8.2f %10.2f %+8.2f\n",
+                         (int) knob, v1.first, v1.first - vb.first, v1.second, v1.second - vb.second);
+        }
+        std::printf ("\n");
+    }
+
     // What does the TRUE LEVEL switch actually change? Its whole purpose is to
     // hold perceived loudness while the knob moves, so if the loudness already
     // holds without it there is nothing left for it to do.

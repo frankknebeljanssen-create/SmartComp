@@ -277,8 +277,17 @@ void SmartCompProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Mi
         const float sm = std::exp(-(float)numSamples / (float)(currentSampleRate * MAKEUP_SEC));
         slowInMS = slowInMS * sm + blockInMS * trimSq * (1.0f - sm);
         if (! std::isfinite(slowInMS) || slowInMS < 0.0f) slowInMS = 0.0f;
-        // Relative gate, BS.1770 style: 10 dB below the ungated average.
-        if (blockInMS * trimSq > gatedInMS * 0.1f || gatedInMS <= 0.0f) {
+        // Relative gate, BS.1770 style: blocks more than 10 dB below the
+        // running average do not count. The decision is taken ONCE, here, from
+        // the INPUT, and the output meter below obeys the same flag.
+        //
+        // Gating each side against its own average looks symmetrical and is not:
+        // the input has the pauses, the compressed output barely does, so the
+        // input's quiet blocks were dropped while the output's were kept. The
+        // input then read high, the cut came out too small, and the processed
+        // signal ended up 4.3 dB LOUDER than bypass instead of matched.
+        loudnessGateOpen = (blockInMS * trimSq > gatedInMS * 0.1f) || gatedInMS <= 0.0f;
+        if (loudnessGateOpen) {
             gatedInMS = gatedInMS * lufsSmooth + blockInMS * trimSq * (1.0f - lufsSmooth);
             if (! std::isfinite(gatedInMS) || gatedInMS < 0.0f) gatedInMS = 0.0f;
         }
@@ -715,7 +724,7 @@ void SmartCompProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Mi
                 const float smSlow = std::exp(-(float)numSamples / (float)(currentSampleRate * MAKEUP_SEC));
                 slowOutMS = slowOutMS * smSlow + blockMS * (1.0f - smSlow);
                 if (! std::isfinite(slowOutMS) || slowOutMS < 0.0f) slowOutMS = 0.0f;
-                if (blockMS > gatedOutMS * 0.1f || gatedOutMS <= 0.0f) {
+                if (loudnessGateOpen) {
                     gatedOutMS = gatedOutMS * sm + blockMS * (1.0f - sm);
                     if (! std::isfinite(gatedOutMS) || gatedOutMS < 0.0f) gatedOutMS = 0.0f;
                 }
@@ -765,7 +774,7 @@ void SmartCompProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Mi
                     const float fastResidualDB = juce::jlimit(0.0f, SLAM_MAKEUP_MAX_DB, baseResidualDB);
                     float trimDB = (inLevelDB - preMakeupDB) - fastResidualDB;
                     if (! std::isfinite(trimDB)) trimDB = 0.0f;
-                    trimDB = juce::jlimit(-12.0f, 12.0f, trimDB);
+                    trimDB = juce::jlimit(-24.0f, 24.0f, trimDB);
                     const float blockTimeMs = (float)numSamples / (float)currentSampleRate * 1000.0f;
                     const float maxDelta = 0.5f * blockTimeMs / 50.0f;
                     matchResidualDB = juce::jlimit(matchResidualDB - maxDelta,

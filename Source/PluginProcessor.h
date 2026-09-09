@@ -152,6 +152,7 @@ private:
     // the words quieter — measured, the match drifted 1.98 dB across the lower
     // knob range on a vocal where leaving it off drifted 1.04.
     float gatedInMS = 0.0f, gatedOutMS = 0.0f;
+    bool  loudnessGateOpen = true;   // one decision per block, both meters obey it
     bool  slowPredictedPrimed = false;
     float smoothedInLUFS = 0.0f;
     float smoothedOutLUFS = 0.0f;
