@@ -16,6 +16,7 @@
 
 #include "../Source/PluginProcessor.h"
 #include "../Source/DSP/LookaheadLimiter.h"
+#include <juce_audio_formats/juce_audio_formats.h>
 
 #include <cmath>
 #include <cstdio>
@@ -26,6 +27,8 @@
 namespace {
 
 constexpr double SR = 44100.0;
+std::vector<float> userFileL, userFileR;
+bool useUserFile = false;
 constexpr int    BLOCK = 512;
 
 double dB (double linv) { return 20.0 * std::log10 (std::max (linv, 1.0e-12)); }
@@ -140,6 +143,37 @@ void makeConstantDrums (std::vector<float>& L, std::vector<float>& R, double sec
         s += 0.18 * std::sin (2.0 * M_PI * 82.0 * t);
         L[(size_t) i] = R[(size_t) i] = (float) (s * lin (-9.0));
     }
+}
+
+// Load a real file instead of the synthetic material. Everything above is a
+// stand-in for music, and a stand-in can disagree with the real thing — when a
+// listening report and the harness disagree, this is how the argument gets
+// settled on the actual signal.
+bool loadFile (const juce::String& path, std::vector<float>& L, std::vector<float>& R)
+{
+    juce::AudioFormatManager fm;
+    fm.registerBasicFormats();
+    juce::File f (path);
+    std::unique_ptr<juce::AudioFormatReader> rd (fm.createReaderFor (f));
+    if (rd == nullptr) return false;
+
+    const int n = (int) rd->lengthInSamples;
+    juce::AudioBuffer<float> buf ((int) rd->numChannels, n);
+    rd->read (&buf, 0, n, 0, true, true);
+
+    // Resampled crudely to the harness rate if needed: this measures level, and
+    // nearest-neighbour is inaudible to an RMS.
+    const double ratio = rd->sampleRate / SR;
+    const int outN = (int) (n / ratio);
+    L.assign ((size_t) outN, 0.0f); R.assign ((size_t) outN, 0.0f);
+    for (int i = 0; i < outN; ++i) {
+        const int src = juce::jlimit (0, n - 1, (int) (i * ratio));
+        L[(size_t) i] = buf.getSample (0, src);
+        R[(size_t) i] = buf.getSample (buf.getNumChannels() > 1 ? 1 : 0, src);
+    }
+    std::printf ("loaded %s — %.1f s, %.0f Hz, %d ch\n",
+                 f.getFileName().toRawUTF8(), outN / SR, rd->sampleRate, (int) rd->numChannels);
+    return true;
 }
 
 //==============================================================================
@@ -381,9 +415,16 @@ void runMaterial (const char* name,
 
 } // namespace
 
-int main()
+int main (int argc, char** argv)
 {
     std::printf ("\n=== SmartComp density probe @ %.0f Hz ===\n", SR);
+    // Given a file, report only the A/B on it — that is the question a real
+    // recording gets asked, and the synthetic sections would just be noise.
+    if (argc > 1) {
+        std::vector<float> fL, fR;
+        if (! loadFile (argv[1], fL, fR)) { std::printf ("could not read %s\n", argv[1]); return 1; }
+        userFileL = fL; userFileR = fR; useUserFile = true;
+    }
     {
         SmartCompProcessor p;
         p.setPlayConfigDetails (2, 2, SR, BLOCK);
@@ -692,6 +733,7 @@ int main()
         std::vector<float> bL, bR, vL, vR;
         makeBreakbeat (bL, bR, 24.0);
         makeVocal (vL, vR, 24.0);
+        if (useUserFile) { bL = vL = userFileL; bR = vR = userFileR; }
         // Across source levels too: the wall's drive is clamped at zero, so a
         // source already louder than its target gets none of it while the
         // compressor still takes its reduction out.

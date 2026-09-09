@@ -95,6 +95,7 @@ target_compile_definitions(density_probe PUBLIC
 target_link_libraries(density_probe
     PRIVATE
         SmartComp
+        juce::juce_audio_formats
         juce::juce_audio_utils
         juce::juce_dsp
     PUBLIC
