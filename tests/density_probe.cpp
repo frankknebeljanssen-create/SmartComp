@@ -382,6 +382,13 @@ void runMaterial (const char* name,
 int main()
 {
     std::printf ("\n=== SmartComp density probe @ %.0f Hz ===\n", SR);
+    {
+        SmartCompProcessor p;
+        p.setPlayConfigDetails (2, 2, SR, BLOCK);
+        p.prepareToPlay (SR, BLOCK);
+        std::printf ("reported latency: %d samples (%.2f ms)\n",
+                     p.getLatencySamples(), p.getLatencySamples() * 1000.0 / SR);
+    }
     std::printf ("Short-term (50ms) loudness of the plugin output. At the knob's maximum\n");
     std::printf ("the spread should collapse and the mean should sit close to the ceiling.\n\n");
 
