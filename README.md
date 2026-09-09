@@ -5,48 +5,95 @@ and, turned all the way up, stops being polite about it.
 
 ![SmartComp screenshot](docs/screenshot.png)
 
-## Why
+## How it works
 
-Most compressors need gain staging before the knob does anything useful: set
-the threshold to a fixed dBFS value, and a quiet take sits below it doing
-nothing while a hot take slams. SmartComp's threshold tracks a slow average of
-the incoming level instead, so a given knob position delivers roughly the same
-amount of gain reduction whether the track came in at −30 dBFS or −15 dBFS —
-measured, within about 1.5 dB across that range.
+The knob has two halves, and they behave differently on purpose.
 
-Makeup replaces the loudness the compressor actually removed, measured as
-K-weighted energy either side of it. Turning the knob up therefore changes the
-character without changing the level, which is what lets you judge it by ear
-instead of by loudness.
+**Bottom two thirds — a compressor that leaves the loudness alone.**
 
-## The knob
+Most compressors need setting up before the knob does anything useful: park the
+threshold at a fixed dBFS value and a quiet take sits below it doing nothing
+while a hot one slams. This one measures how loud the material is running and
+places its threshold relative to that, so a quietly recorded vocal and a hot one
+get roughly the same amount of compression at the same knob position — measured,
+within about 1.5 dB across a 15 dB range of source level. You can start turning
+without setting anything up first.
 
-**Bottom two thirds — the compressor.** Loudness holds still while the
-dynamics tighten. This is where AUTO lives and where a vocal wants to sit.
+And whatever loudness it takes out, it puts back automatically — not estimated
+from the threshold and ratio, but *measured*, as K-weighted energy either side
+of the compressor. So turning the knob up here does not make anything louder.
+The dynamics tighten, the sound gets denser and steadier, and the level stays
+where it was.
 
-**AUTO** watches where the sweet spot currently is and drives the knob there,
-following it as the performance changes. Drag the knob away and it holds while
-your mouse is down, then pulls back when you let go — harder the further you
-dragged it, so a haul out of the red snaps back in about a second while a small
-nudge eases back gently.
+**Top third — the wall.**
 
-The sweet spot is a claim about gain reduction, not about knob position: its
-edges are where the compressor delivers 3 and 5 dB on peaks, and `auto_probe`
-measures both every run.
-
-**Top third — the wall.** From knob 24 upward the plugin stops restoring the
-level and starts driving into the limiter: the threshold deepens, the detector
-window shortens, the release lengthens so the gain holds instead of recovering
-between hits, and the makeup crosses over to an absolute loudness target. On a
-drum loop this takes the short-term loudness spread from 14.2 dB in to 5.6 dB
-out with the peaks sitting on the ceiling. It is not subtle and is not meant to
-be — turn it down from there.
+From knob 24 up it stops restoring the level and starts deliberately driving
+into its own brickwall limiter: the threshold goes deeper, the detector window
+shortens, and the release lengthens so the gain holds instead of springing back
+between hits. The result is dense, loud and sitting on the ceiling. On a drum
+loop the short-term level swing goes from 14.2 dB in to 5.6 dB out with the
+peaks on the ceiling. The readout says CRUSHED for a reason.
 
 ![SmartComp at the top of the knob](docs/screenshot-wall.png)
 
 Below knob 24 none of that is active, so the gentle range is untouched by it.
-AUTO parks well below where it begins, so switch AUTO off to hear the top —
-otherwise the rubber band pulls the knob straight back out of it.
+
+**AUTO** drives the knob to where the compressor is delivering 3 to 5 dB on
+peaks — the usual place for a vocal — and follows the material. Drag the knob
+away and it holds while the mouse is down, then pulls back like a rubber band
+when you let go, harder the further you dragged it. It parks well below where
+the wall starts, so switch AUTO off if you want to hear the top.
+
+The sweet spot is a claim about gain reduction, not about knob position: its
+edges are where the compressor actually delivers 3 and 5 dB, and `auto_probe`
+measures both every run.
+
+## What that gets you
+
+**You can hear what the compressor is doing, not just that it got louder.**
+This is the real point. On almost any compressor, turning it up makes it louder,
+and louder always sounds better at first — you turn it up, you like it, and the
+next day the track is flat. Here the level stays put through the working range,
+so if it sounds better as you turn up, it is because it sounds better.
+
+**No gain staging first.** Drop it on the track and turn the knob. The position
+means roughly the same thing on every source.
+
+**AUTO finds the spot for you** and keeps following it as the performance
+changes.
+
+**And the top third is an effect, not an accident.** When you want a drum loop
+or a bus genuinely crushed, that is where you go. It gets a lot louder up there
+on purpose — which is what TRUE LEVEL is for: it takes that loudness advantage
+back out so you can judge what the wall is doing to the sound rather than how
+loud it is.
+
+Short version: a tool at the bottom, an effect at the top, one knob.
+
+## How new is this?
+
+The ingredients are not new. The combination, as far as I could establish, is.
+
+Automatic makeup gain is everywhere — but it is almost always *calculated* from
+the threshold and ratio rather than measured. FabFilter's own Pro-C manual calls
+its version "an educated guess" that you may need to correct by hand; Tokyo Dawn
+Labs refuse to ship one at all and say why in print. A makeup that actually
+measures the loudness it is replacing is ahead of what the category normally
+does.
+
+Loudness matching for fair A/B exists too — iZotope ships it, for one. But as a
+separate feature alongside the makeup, not interlocking with it.
+
+What I could not find anywhere is both behaviours on **one** knob: a compressor
+that holds measured loudness constant through its working range, and the same
+knob turning into a limiter wall at the top. sonible splits exactly these two
+behaviours across two products — their compressor has auto gain and no match
+switch, their limiter has the match switch and no auto gain. And the best-known
+one-knob compressor in this category, Waves RVox, has no answer to the
+comparison problem at all: its manual suggests ganging two faders together.
+
+So not "nobody has done this", but: the pieces are known, and assembled this way
+I have not found it.
 
 ## Signal chain
 
