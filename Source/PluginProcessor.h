@@ -136,6 +136,12 @@ private:
     // loudness the compressor actually removed — the quantity makeup is meant
     // to replace, and the one a time-average of gain reduction gets wrong.
     float slowInMS = 0.0f, slowOutMS = 0.0f;
+    // The law's own predicted reduction, smoothed with the same window as the
+    // energy pair above. Subtracting it leaves only the part of the makeup that
+    // genuinely has to be measured, so the part that follows the knob does not
+    // have to wait for a measurement.
+    float slowPredictedDB = 0.0f;
+    bool  slowPredictedPrimed = false;
     float smoothedInLUFS = 0.0f;
     float smoothedOutLUFS = 0.0f;
 

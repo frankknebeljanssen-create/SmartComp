@@ -116,7 +116,7 @@ void SmartCompProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
 
     smoothedInMS = 0.0f;
     smoothedOutMS = 0.0f;
-    slowInMS = 0.0f; slowOutMS = 0.0f;
+    slowInMS = 0.0f; slowOutMS = 0.0f; slowPredictedDB = 0.0f; slowPredictedPrimed = false;
     smoothedInLUFS = 0.0f;
     smoothedOutLUFS = 0.0f;
     smoothedPeakDB = -60.0f;
@@ -611,7 +611,45 @@ void SmartCompProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Mi
             float lossDB = (slowInMS > 1.0e-12f && slowOutMS > 1.0e-12f)
                          ? 10.0f * std::log10(slowInMS / slowOutMS) : 0.0f;
             if (! std::isfinite(lossDB)) lossDB = 0.0f;
-            float makeupDB = juce::jlimit(0.0f, 24.0f, lossDB);
+
+            // Split into a part that is known and a part that must be measured.
+            // The law's predicted reduction is a pure function of the knob, so
+            // it moves the instant the knob does; smoothing a copy of it with
+            // the same window and subtracting that leaves only the difference
+            // between the prediction and what the material actually cost, which
+            // is the slow part. In steady state the two cancel exactly and this
+            // is still the measured loss.
+            //
+            // Without the split the whole makeup waited on a seconds-long
+            // measurement while the compressor started reducing immediately:
+            // sweeping the knob from 0 to 36 in a second dropped the level by
+            // 25 dB on the way through before the makeup caught up.
+            // The law's own predicted reduction, which is a pure function of the
+            // knob and therefore moves the instant the knob does. Fitted against
+            // what the compressor actually delivers across both test materials
+            // it is good to 1.44 dB RMS, so the slow half below has very little
+            // left to correct.
+            //
+            // A version carrying a nominal crest term was tried, on the theory
+            // that the envelope rides above the programme level and the depth
+            // alone under-reads the reduction. Fitting it against the measured
+            // curve says otherwise: crest 0 fits to 1.44 dB, crest 9 to 7.5 dB
+            // and crest 30 to 23.4 dB. Raising it did shrink the sweep dip, but
+            // only by over-boosting during the move — which the dip metric
+            // cannot see, because it only looks for movement AGAINST the knob.
+            const float predictedDB = compressor.getStaticMakeupDB();
+            {
+                // Primed on the first block. Left to converge from zero it spent
+                // fifteen seconds handing out a makeup that was far too large,
+                // which is both wrong on load and long enough to dominate a
+                // measurement that only skips three.
+                const float sm = std::exp(-(float)numSamples / (float)(currentSampleRate * MAKEUP_SEC));
+                if (! slowPredictedPrimed) { slowPredictedDB = predictedDB; slowPredictedPrimed = true; }
+                slowPredictedDB = slowPredictedDB * sm + predictedDB * (1.0f - sm);
+                if (! std::isfinite(slowPredictedDB)) slowPredictedDB = 0.0f;
+            }
+            float makeupDB = juce::jlimit(0.0f, 24.0f,
+                                          predictedDB + (lossDB - slowPredictedDB));
 
             // Above knob 24 the servo is crossfaded OUT, not added to. Following
             // the delivered reduction restores the level and nothing more:
@@ -711,8 +749,7 @@ void SmartCompProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Mi
                     // for a second: at the top the makeup's base is the law's
                     // predicted reduction, which moves instantly, while the
                     // reported one is a 500 ms average that does not.
-                    float baseResidualDB = lossDB
-                        + slam01 * (compressor.getStaticMakeupDB() - lossDB);
+                    float baseResidualDB = predictedDB;
                     const float fastResidualDB = juce::jlimit(0.0f, SLAM_MAKEUP_MAX_DB, baseResidualDB);
                     float trimDB = (inLevelDB - preMakeupDB) - fastResidualDB;
                     if (! std::isfinite(trimDB)) trimDB = 0.0f;

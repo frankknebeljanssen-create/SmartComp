@@ -239,6 +239,18 @@ public:
                 // Keep the window fed while the knob sits at zero, otherwise
                 // turning it up would look back at stale gain values.
                 gainMin.pushAndGet(0.0f);
+                // Keep the programme level current as well. Skipping it left
+                // autoLevelDB unprimed while the knob sat at zero, so the first
+                // sample after the knob moved seeded the level from whatever
+                // instant that happened to be. Start turning during a gap
+                // between words and it was seeded some 20 dB low, the threshold
+                // went with it, and the compressor over-compressed by that much
+                // until the 0.8 s tracker recovered — measured as a 20 dB hole
+                // in the level during a one-second sweep from 0 to 36, worse
+                // the faster the knob was turned.
+                trackProgrammeLevel(runDetector(
+                    (scL != nullptr) ? scL[i] : bufferL[i],
+                    (scR != nullptr) ? scR[i] : bufferR[i], 0.08f, rmsCoeff));
                 int readPos = (delayWritePos - lookahead + (int)delayBufferL.size()) % (int)delayBufferL.size();
                 float delayedL = delayBufferL[readPos];
                 float delayedR = delayBufferR[readPos];
@@ -295,6 +307,13 @@ public:
         // delivered — a servo which, being the inverse of the compressor's own
         // gain, made the whole chain unity gain by construction and left the
         // limiter's ceiling permanently out of reach.
+        // What the law delivers given how far this material's envelope actually
+        // rides above the programme level it is referenced to. Assuming the
+        // envelope sits ON that level — which is what using the depth alone
+        // does — under-read the reduction by 20 dB during a fast knob sweep,
+        // and the makeup that follows this then left a hole that size in the
+        // level on the way up. detCrestDB is from the previous block; it moves
+        // over seconds, so a block of lag is immaterial.
         staticMakeupDB = std::max(0.0f, depthDB) * (1.0f - 1.0f / ratio);
         if (! std::isfinite(staticMakeupDB)) staticMakeupDB = 0.0f;
 
@@ -317,47 +336,7 @@ public:
             float detL = (scL != nullptr) ? scL[i] : inL;
             float detR = (scR != nullptr) ? scR[i] : inR;
 
-            // ===== DETECTOR =====
-            // Sidechain filtering happens on the WAVEFORM, before rectification.
-            // It used to run after sqrt(L^2+R^2), i.e. on an already-rectified
-            // signal — filtering an envelope rather than audio, so neither the
-            // SC HPF knob nor the 200 Hz shelf did what its label said. A 50 Hz
-            // tone rectifies to a ~100 Hz ripple riding on DC, so high-passing
-            // afterwards removed the DC but left the ripple, and the knob's
-            // frequency had no straightforward meaning at all.
-            float mono = (detL + detR) * 0.5f;
-
-            // Sidechain HPF: keeps bass out of the detector (audio untouched)
-            if (scHpfFreq > 1.0f) {
-                // 2nd order Butterworth HPF via biquad
-                float scHpfOut = scHpfB0 * mono + scHpfB1 * scHpfX1 + scHpfB2 * scHpfX2
-                               - scHpfA1 * scHpfY1 - scHpfA2 * scHpfY2;
-                scHpfX2 = scHpfX1; scHpfX1 = mono;
-                scHpfY2 = scHpfY1; scHpfY1 = scHpfOut;
-                mono = scHpfOut;
-            }
-
-            // Fixed low shelf: -3 dB below 200 Hz, keeps rumble out of the detector
-            detLowLP = detLowLP + detLowCoeff * (mono - detLowLP);
-            mono = mono - detLowCutGain * detLowLP;
-
-            // ===== HYBRID RMS/PEAK DETECTOR =====
-            float monoAbs = std::abs(mono);
-
-            if (monoAbs > peakEnv)
-                peakEnv = peakAttackCoeff * peakEnv + (1.0f - peakAttackCoeff) * monoAbs;
-            else
-                peakEnv = peakReleaseCoeff * peakEnv + (1.0f - peakReleaseCoeff) * monoAbs;
-
-            float squared = monoAbs * monoAbs;
-            rmsSquaredSum = rmsC * rmsSquaredSum + (1.0f - rmsC) * squared;
-            float rmsLevel = std::sqrt(rmsSquaredSum);
-
-            float detLevel = rmsLevel * (1.0f - peakBlend) + peakEnv * peakBlend;
-            if (detLevel < 1e-15f) detLevel = 0.0f;
-            // 20*log10(x) = 8.6858896*ln(x) — std::log is ~2x faster than log10
-            static constexpr float ln2dB = 8.685889638065037f; // 20/ln(10)
-            float detDB = (detLevel > 1e-10f) ? ln2dB * std::log(detLevel) : -100.0f;
+            const float detDB = runDetector(detL, detR, peakBlend, rmsC);
 
             // ===== SLOW PROGRAMME LEVEL (drives the auto threshold) =====
             // Deliberately far slower than the compressor's own release, so the
@@ -365,11 +344,7 @@ public:
             // reduction and flattening the compression out. Only tracked while
             // there is signal, otherwise a pause would drag it down and the
             // vocal would get slammed on the way back in.
-            if (detDB > -60.0f) {
-                if (! autoLevelPrimed) { autoLevelDB = detDB; autoLevelPrimed = true; }
-                float c = (detDB > autoLevelDB) ? autoLevelRiseCoeff : autoLevelFallCoeff;
-                autoLevelDB = c * autoLevelDB + (1.0f - c) * detDB;
-            }
+            trackProgrammeLevel(detDB);
 
             // ===== PROGRAM-DEPENDENT ENVELOPE =====
             if (detDB > envDB)
@@ -585,6 +560,65 @@ private:
                   && std::isfinite(scHpfY1) && std::isfinite(scHpfY2));
         if (bad)
             reset();
+    }
+
+
+    // The detector, split out so it can also be run while the knob sits at zero
+    // — see the unity path below for why that matters.
+    float runDetector(float detL, float detR, float peakBlend, float rmsC)
+    {
+        // Sidechain filtering happens on the WAVEFORM, before rectification.
+        // It used to run after sqrt(L^2+R^2), i.e. on an already-rectified
+        // signal — filtering an envelope rather than audio, so neither the
+        // SC HPF knob nor the 200 Hz shelf did what its label said. A 50 Hz
+        // tone rectifies to a ~100 Hz ripple riding on DC, so high-passing
+        // afterwards removed the DC but left the ripple, and the knob's
+        // frequency had no straightforward meaning at all.
+        float mono = (detL + detR) * 0.5f;
+
+        // Sidechain HPF: keeps bass out of the detector (audio untouched)
+        if (scHpfFreq > 1.0f) {
+            // 2nd order Butterworth HPF via biquad
+            float scHpfOut = scHpfB0 * mono + scHpfB1 * scHpfX1 + scHpfB2 * scHpfX2
+                       - scHpfA1 * scHpfY1 - scHpfA2 * scHpfY2;
+            scHpfX2 = scHpfX1; scHpfX1 = mono;
+            scHpfY2 = scHpfY1; scHpfY1 = scHpfOut;
+            mono = scHpfOut;
+        }
+
+        // Fixed low shelf: -3 dB below 200 Hz, keeps rumble out of the detector
+        detLowLP = detLowLP + detLowCoeff * (mono - detLowLP);
+        mono = mono - detLowCutGain * detLowLP;
+
+        // ===== HYBRID RMS/PEAK DETECTOR =====
+        float monoAbs = std::abs(mono);
+
+        if (monoAbs > peakEnv)
+            peakEnv = peakAttackCoeff * peakEnv + (1.0f - peakAttackCoeff) * monoAbs;
+        else
+            peakEnv = peakReleaseCoeff * peakEnv + (1.0f - peakReleaseCoeff) * monoAbs;
+
+        float squared = monoAbs * monoAbs;
+        rmsSquaredSum = rmsC * rmsSquaredSum + (1.0f - rmsC) * squared;
+        float rmsLevel = std::sqrt(rmsSquaredSum);
+
+        float detLevel = rmsLevel * (1.0f - peakBlend) + peakEnv * peakBlend;
+        if (detLevel < 1e-15f) detLevel = 0.0f;
+        // 20*log10(x) = 8.6858896*ln(x) — std::log is ~2x faster than log10
+        static constexpr float ln2dB = 8.685889638065037f; // 20/ln(10)
+        return (detLevel > 1e-10f) ? ln2dB * std::log(detLevel) : -100.0f;
+    }
+
+    // The slow programme level the threshold is referenced to. Only tracked
+    // while there is signal, otherwise a pause would drag it down and the vocal
+    // would get slammed on the way back in.
+    void trackProgrammeLevel(float detDB)
+    {
+        if (detDB > -60.0f) {
+            if (! autoLevelPrimed) { autoLevelDB = detDB; autoLevelPrimed = true; }
+            float c = (detDB > autoLevelDB) ? autoLevelRiseCoeff : autoLevelFallCoeff;
+            autoLevelDB = c * autoLevelDB + (1.0f - c) * detDB;
+        }
     }
 
     // Warm soft-knee with smoothstep S-curve

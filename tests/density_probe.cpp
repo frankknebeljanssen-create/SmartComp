@@ -389,8 +389,118 @@ int main()
         std::printf ("reported latency: %d samples (%.2f ms)\n",
                      p.getLatencySamples(), p.getLatencySamples() * 1000.0 / SR);
     }
+    {
+        auto show = [](const char* what, SmartCompProcessor& q) {
+            std::printf ("  %-34s inTrim %+6.2f  comp %5.2f  gain %+6.2f  mix %5.1f  gate %6.1f\n",
+                         what,
+                         q.apvts.getRawParameterValue ("inTrim")->load(),
+                         q.apvts.getRawParameterValue ("comp")->load(),
+                         q.apvts.getRawParameterValue ("gain")->load(),
+                         q.apvts.getRawParameterValue ("mix")->load(),
+                         q.apvts.getRawParameterValue ("gate")->load());
+        };
+        std::printf ("DEFAULTS AND STATE ROUND TRIP\n");
+        SmartCompProcessor a; a.prepareToPlay (SR, BLOCK);
+        show ("fresh instance", a);
+
+        juce::MemoryBlock mb; a.getStateInformation (mb);
+        SmartCompProcessor b; b.prepareToPlay (SR, BLOCK);
+        b.setStateInformation (mb.getData(), (int) mb.getSize());
+        show ("after saving and reloading", b);
+
+        // What a host hands back when it has nothing stored yet.
+        SmartCompProcessor c; c.prepareToPlay (SR, BLOCK);
+        c.setStateInformation (nullptr, 0);
+        show ("after an empty state from the host", c);
+
+        // And after the value really was moved, saved and restored.
+        SmartCompProcessor d; d.prepareToPlay (SR, BLOCK);
+        d.apvts.getParameter ("inTrim")->setValueNotifyingHost (
+            d.apvts.getParameter ("inTrim")->convertTo0to1 (12.0f));
+        juce::MemoryBlock mb2; d.getStateInformation (mb2);
+        SmartCompProcessor e; e.prepareToPlay (SR, BLOCK);
+        e.setStateInformation (mb2.getData(), (int) mb2.getSize());
+        show ("after storing +12 and reloading", e);
+        std::printf ("\n");
+    }
+
     std::printf ("Short-term (50ms) loudness of the plugin output. At the knob's maximum\n");
     std::printf ("the spread should collapse and the mean should sit close to the ceiling.\n\n");
+
+    // Sweeping the knob by hand. The makeup has to follow the knob, not lag
+    // behind it: the compressor starts reducing the moment the knob moves, so
+    // anything slow in the restoration shows up as a hole in the level.
+    {
+        std::vector<float> sL, sR;
+        makeVocal (sL, sR, 26.0);
+        for (double secs : { 1.0, 4.0, -1.0 })
+        {
+            SmartCompProcessor p;
+            p.setPlayConfigDetails (2, 2, SR, BLOCK);
+            p.prepareToPlay (SR, BLOCK);
+            p.apvts.getParameter ("mix")->setValueNotifyingHost (1.0f);
+            p.apvts.getParameter ("gate")->setValueNotifyingHost (0.0f);
+            p.rideMode.store (false);
+
+            std::vector<float> out;
+            juce::AudioBuffer<float> buf (2, BLOCK);
+            juce::MidiBuffer midi;
+            const double t0 = 8.0;
+            for (int off = 0; off + BLOCK <= (int) sL.size(); off += BLOCK)
+            {
+                const double t = (double) off / SR;
+                const double dur = std::abs (secs);
+                double u = juce::jlimit (0.0, 1.0, (t - t0) / dur);
+                if (secs < 0.0) u = (t < t0) ? 1.0 : 1.0 - u;      // 36 -> 0 instead
+                p.apvts.getParameter ("comp")->setValueNotifyingHost ((float) u);
+                std::copy (sL.begin() + off, sL.begin() + off + BLOCK, buf.getWritePointer (0));
+                std::copy (sR.begin() + off, sR.begin() + off + BLOCK, buf.getWritePointer (1));
+                p.processBlock (buf, midi);
+                const float* o = buf.getReadPointer (0);
+                out.insert (out.end(), o, o + BLOCK);
+            }
+            // The applied gain, not the output level. Comparing output windows
+            // against a pre-sweep average finds the test vocal's own word gaps
+            // and calls them a dip; gain is what the plugin does and is
+            // independent of the material's holes. Windows whose input is too
+            // quiet to measure are skipped.
+            const int w = (int) (0.25 * SR);
+            std::vector<std::pair<double,double>> gain;   // time, dB
+            for (int q = 0; q + w <= (int) out.size() && q + w <= (int) sL.size(); q += w / 2) {
+                double si = 0.0, so = 0.0;
+                for (int i = 0; i < w; ++i) {
+                    si += (double) sL[(size_t)(q+i)] * sL[(size_t)(q+i)];
+                    so += (double) out[(size_t)(q+i)] * out[(size_t)(q+i)];
+                }
+                si = std::sqrt (si / w); so = std::sqrt (so / w);
+                if (si > 1.0e-4) gain.emplace_back ((double) q / SR, dB (so) - dB (si));
+            }
+            double g0 = 0.0; int n0 = 0;
+            for (auto& g : gain) if (g.first > 5.0 && g.first < t0) { g0 += g.second; ++n0; }
+            g0 /= std::max (n0, 1);
+            double worst = 0.0, worstAt = 0.0, settled = 0.0; int ns = 0;
+            for (auto& g : gain) {
+                // Turning the knob up must never make the gain dip below where
+                // it started, and turning it down must never make it rise above.
+                // The end state is not the question — the wall is supposed to
+                // add 20-odd dB — the question is whether the path there is
+                // monotone, because a hole on the way is what is audible.
+                const double dur = std::abs (secs);
+                const double d = g.second - g0;
+                const double wrongWay = (secs < 0.0) ? d : -d;
+                if (g.first >= t0 && g.first < t0 + dur + 6.0 && wrongWay > -worst) {
+                    worst = -wrongWay; worstAt = g.first - t0;
+                }
+                if (g.first > t0 + dur + 6.0) { settled += d; ++ns; }
+            }
+            settled /= std::max (ns, 1);
+            std::printf ("KNOB SWEEP %s over %.0f s: worst move against the knob"
+                         " %+6.2f dB at %.2f s, ends %+6.2f dB\n",
+                         secs < 0.0 ? "36 -> 0" : "0 -> 36", std::abs (secs),
+                         worst, worstAt, settled);
+        }
+        std::printf ("\n");
+    }
 
     // A wall that depends on how hot the source was is not a wall. On the stock
     // code this row moves 1:1 with the source, because the chain is unity gain
