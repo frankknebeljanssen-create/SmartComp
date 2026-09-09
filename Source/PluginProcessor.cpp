@@ -944,6 +944,14 @@ juce::AudioProcessorParameter* SmartCompProcessor::getBypassParameter() const
 void SmartCompProcessor::getStateInformation(juce::MemoryBlock& destData)
 {
     auto state = apvts.copyState();
+    // AUTO and TRUE LEVEL are plain atomics rather than APVTS parameters, so
+    // copyState does not carry them and neither survived a session reload —
+    // AUTO being the plugin's headline feature, silently off every time the
+    // project was reopened. Saved beside the parameters rather than turned into
+    // parameters, which would also expose them to host automation: that is a
+    // feature decision, this is a bug.
+    state.setProperty("rideMode", rideMode.load(), nullptr);
+    state.setProperty("honestMode", honestMode.load(), nullptr);
     std::unique_ptr<juce::XmlElement> xml(state.createXml());
     copyXmlToBinary(*xml, destData);
 }
@@ -952,7 +960,14 @@ void SmartCompProcessor::setStateInformation(const void* data, int sizeInBytes)
 {
     std::unique_ptr<juce::XmlElement> xml(getXmlFromBinary(data, sizeInBytes));
     if (xml != nullptr && xml->hasTagName(apvts.state.getType()))
-        apvts.replaceState(juce::ValueTree::fromXml(*xml));
+    {
+        auto tree = juce::ValueTree::fromXml(*xml);
+        apvts.replaceState(tree);
+        // Absent in states written before this was saved, so both default to
+        // off exactly as they did then.
+        rideMode.store((bool) tree.getProperty("rideMode", false));
+        honestMode.store((bool) tree.getProperty("honestMode", false));
+    }
 }
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter() { return new SmartCompProcessor(); }

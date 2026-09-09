@@ -405,10 +405,14 @@ int main()
         SmartCompProcessor a; a.prepareToPlay (SR, BLOCK);
         show ("fresh instance", a);
 
+        // The two buttons are not parameters, so they need checking too.
+        a.rideMode.store (true); a.honestMode.store (true);
         juce::MemoryBlock mb; a.getStateInformation (mb);
         SmartCompProcessor b; b.prepareToPlay (SR, BLOCK);
         b.setStateInformation (mb.getData(), (int) mb.getSize());
         show ("after saving and reloading", b);
+        std::printf ("  %-34s AUTO %s  TRUE LEVEL %s   (both were on when saved)\n", "",
+                     b.rideMode.load() ? "on " : "OFF", b.honestMode.load() ? "on " : "OFF");
 
         // What a host hands back when it has nothing stored yet.
         SmartCompProcessor c; c.prepareToPlay (SR, BLOCK);
