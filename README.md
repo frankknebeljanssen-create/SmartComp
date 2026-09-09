@@ -45,6 +45,12 @@ pre-empting the hit. Driving only one gives half a control — measured, each is
 worth about 4 dB on its own and they overlap almost completely. Reported latency
 does not move either way.
 
+**RELEASE**, beside it, is the other half of the same idea: Attack shapes the
+single hit, Release shapes the groove between them. It is set in note values
+rather than milliseconds, because what matters on a loop is where the gain
+recovery sits against the beat, and that relationship should survive a tempo
+change.
+
 **AUTO** drives the knob to where the compressor is delivering 3 to 5 dB on
 peaks — the usual place for a vocal — and follows the material. Drag the knob
 away and it holds while the mouse is down, then pulls back like a rubber band
@@ -123,6 +129,7 @@ the only thing that drives into it. Reported latency is 158 samples at
 | **TRUE LEVEL** | on/off | Holds output loudness equal to the input, so you can compare settings — or the plugin against bypass — without the louder one winning by being louder. The figure beside it reads in both states: engaged it is what the match is applying, disengaged it is what engaging it would cost. Below knob 24 that is a fraction of a dB, because the makeup already holds loudness there; at the top of the knob it is the wall's 14 to 16 dB. |
 | **Gate** | −80 to −20 dB | Noise gate, off at minimum. Its threshold is drawn on the input meter, with the current attenuation next to it. |
 | **Attack** | AUTO, 0.1–20 ms | How much of a transient survives. At AUTO the peak is caught before it arrives and nothing gets through, which is what a vocal wants. Turn it up and the grab is delayed *and* the lookahead pre-emption is withdrawn together, so the hit punches through before the body is squashed. Measured on a drum loop at Comp 24 it moves the output crest by 4.2 dB while the loudness stays within 0.05 dB — you are hearing character, not level. Above Comp 30 the limiter takes back what it lets through, so the knob dims there rather than pretending. |
+| **Release** | AUTO, 1/32–1/2 | How hard the loop breathes, in note values against the session tempo — so the same setting keeps the same relationship to the groove at any BPM. Measured at Comp 24 on a 120 BPM loop, the gain swells 9.4 dB between hits at AUTO and 2.6 dB at 1/2: a loop that pumps against one that sits still. Loudness holds within 0.32 dB. Fades out above Comp 28 with the wall, like Attack. |
 | **SC HP Filter** | 0–400 Hz | High-pass on the detector only, so bass does not pump the gain reduction. The panel draws its actual response. |
 | **Mix** | 0–100% | Parallel compression blend, latency-compensated. |
 | **In Trim** | ±12 dB | Input gain, ahead of the detector. |

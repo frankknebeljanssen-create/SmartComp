@@ -72,6 +72,44 @@ public:
                                     (knob - ATK_WALL_START) / (ATK_WALL_END - ATK_WALL_START));
     }
 
+    // RELEASE, locked to the session grid. Measured on a 120 BPM drum train,
+    // the applied gain swells 9 dB between hits at the shipping release and
+    // 2.9 dB at sixteen times that — the difference between a loop that
+    // breathes hard and one that sits still, which is the character axis the
+    // plugin had no control over. The useful span lands almost exactly on
+    // 1/32 to 1/2 at 120 BPM, so the setting is named in notes rather than in
+    // milliseconds: at a different tempo the same note keeps the same
+    // relationship to the groove, which a time in ms does not.
+    //
+    // Stepped, because the values ARE the musical grid — there is nothing
+    // between 1/8 and 1/16 worth reaching, and stepping removes any chance of
+    // a stretch of travel that does nothing.
+    enum ReleaseNote { RelAuto = 0, Rel32, Rel16, Rel8, Rel4, Rel2, RelCount };
+
+    static float releaseNoteFraction (int note)
+    {
+        switch (note) {
+            case Rel32: return 1.0f / 8.0f;    // of a beat
+            case Rel16: return 1.0f / 4.0f;
+            case Rel8:  return 1.0f / 2.0f;
+            case Rel4:  return 1.0f;
+            case Rel2:  return 2.0f;
+            default:    return 0.0f;
+        }
+    }
+
+    static const char* releaseNoteName (int note)
+    {
+        switch (note) {
+            case Rel32: return "1/32";
+            case Rel16: return "1/16";
+            case Rel8:  return "1/8";
+            case Rel4:  return "1/4";
+            case Rel2:  return "1/2";
+            default:    return "AUTO";
+        }
+    }
+
     static bool  attackIsAuto (float travel) { return travel <= ATK_AUTO_END; }
 
     static float attackTravelNorm (float travel)

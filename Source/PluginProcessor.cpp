@@ -63,6 +63,9 @@ juce::AudioProcessorValueTreeState::ParameterLayout SmartCompProcessor::createPa
     params.push_back(std::make_unique<juce::AudioParameterFloat>(
         juce::ParameterID("attack", 1), "Attack",
         juce::NormalisableRange<float>(0.0f, 100.0f, 0.5f), 0.0f));
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(
+        juce::ParameterID("release", 1), "Release",
+        juce::NormalisableRange<float>(0.0f, (float)(RVoxCompressor::RelCount - 1), 1.0f), 0.0f));
 
     return { params.begin(), params.end() };
 }
@@ -575,6 +578,31 @@ void SmartCompProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Mi
         const float slam01 = RVoxCompressor::slamForAmount(compAmt01);
         float relFastMs = 40.0f + (1.0f - compAmt01) * 40.0f;  // 40-80ms: tighter at high comp
         float relSlowMs = 400.0f + (1.0f - compAmt01) * 600.0f;  // 400-1000ms: shorter at high comp
+
+        // RELEASE locked to the session grid. The note sets the fast release;
+        // the slow one keeps its existing ratio to it, so the program-dependent
+        // character survives and only the timing is anchored. Falls back to
+        // 120 BPM when the host reports no tempo, and fades out over the same
+        // span as ATTACK, because in the wall the makeup runs on the static
+        // path and cannot absorb the level change — measured, the drift there
+        // reaches 4.1 dB, which would make this a volume knob.
+        {
+            const int relNote = (int) std::lround(apvts.getRawParameterValue("release")->load());
+            const float authority = RVoxCompressor::attackAuthorityForKnob(compAmt01 * 36.0f);
+            const float frac = RVoxCompressor::releaseNoteFraction(relNote) * authority;
+            if (frac > 0.0f) {
+                double bpm = 120.0;
+                if (auto* ph = getPlayHead())
+                    if (auto pos = ph->getPosition())
+                        if (auto t = pos->getBpm())
+                            if (*t > 20.0 && *t < 400.0) bpm = *t;
+                const float beatMs = (float) (60000.0 / bpm);
+                const float ratio = relSlowMs / juce::jmax(1.0f, relFastMs);
+                const float syncedFast = beatMs * frac;
+                relFastMs = relFastMs + (syncedFast - relFastMs) * juce::jlimit(0.0f, 1.0f, authority);
+                relSlowMs = relFastMs * ratio;
+            }
+        }
         // Both converge on 25 ms at the top. A long release is the intuitive
         // anti-pump move and it is wrong here: once the makeup below stops
         // putting the level back, the gain's job is to fill the troughs, not to

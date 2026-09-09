@@ -670,6 +670,65 @@ int main (int argc, char** argv)
         std::printf ("\n");
     }
 
+    // The RELEASE control, which is a groove control rather than a level one.
+    // Measured as the applied gain folded onto one beat: what the loop hears is
+    // not how far the gain moves but the shape it traces between hits.
+    {
+        std::vector<float> cL, cR;
+        makeConstantDrums (cL, cR, 24.0);          // one hit every 500 ms = 120 BPM
+        const double beat = 0.5;
+        std::printf ("RELEASE — applied gain across one beat, 120 BPM drum train, comp 24\n");
+        std::printf ("  %-6s %-38s %7s %8s\n", "note", "gain over the beat (dB, 50 ms steps)",
+                     "swell", "loud");
+        for (int note = 0; note < RVoxCompressor::RelCount; ++note) {
+            SmartCompProcessor p;
+            p.setPlayConfigDetails (2, 2, SR, BLOCK);
+            p.prepareToPlay (SR, BLOCK);
+            p.apvts.getParameter ("mix")->setValueNotifyingHost (1.0f);
+            p.apvts.getParameter ("gate")->setValueNotifyingHost (0.0f);
+            p.apvts.getParameter ("comp")->setValueNotifyingHost (24.0f / 36.0f);
+            p.apvts.getParameter ("release")->setValueNotifyingHost
+                ((float) note / (float) (RVoxCompressor::RelCount - 1));
+            p.rideMode.store (false);
+            std::vector<float> out;
+            juce::AudioBuffer<float> buf (2, BLOCK); juce::MidiBuffer midi;
+            for (int off = 0; off + BLOCK <= (int) cL.size(); off += BLOCK) {
+                std::copy (cL.begin()+off, cL.begin()+off+BLOCK, buf.getWritePointer(0));
+                std::copy (cR.begin()+off, cR.begin()+off+BLOCK, buf.getWritePointer(1));
+                p.processBlock (buf, midi);
+                const float* o = buf.getReadPointer (0);
+                out.insert (out.end(), o, o + BLOCK);
+            }
+            const int w = (int) (0.005 * SR);
+            const int slots = (int) (beat / 0.005);
+            std::vector<double> acc ((size_t) slots, 0.0); std::vector<int> cnt ((size_t) slots, 0);
+            for (int q = (int)(8.0*SR); q + w <= (int) out.size(); q += w) {
+                double si = 0.0, so = 0.0;
+                for (int i = 0; i < w; ++i) {
+                    si += (double) cL[(size_t)(q+i)]*cL[(size_t)(q+i)];
+                    so += (double) out[(size_t)(q+i)]*out[(size_t)(q+i)];
+                }
+                si = std::sqrt (si/w); so = std::sqrt (so/w);
+                if (si < 1.0e-5) continue;
+                const int slot = (int) (std::fmod ((double) q / SR, beat) / 0.005) % slots;
+                acc[(size_t) slot] += dB (so) - dB (si); cnt[(size_t) slot]++;
+            }
+            std::printf ("  %-6s", RVoxCompressor::releaseNoteName (note));
+            double lo = 1e9, hi = -1e9;
+            for (double t = 0.05; t < beat - 0.02; t += 0.05) {
+                const int i = (int)(t / 0.005);
+                const double g = cnt[(size_t)i] ? acc[(size_t)i] / cnt[(size_t)i] : 0.0;
+                std::printf (" %5.1f", g);
+                lo = std::min (lo, g); hi = std::max (hi, g);
+            }
+            double sum = 0.0; int n = 0;
+            for (int i = (int)(8.0*SR); i < (int) out.size(); ++i) { sum += (double) out[i]*out[i]; ++n; }
+            std::printf ("   %6.2f %8.2f\n", hi - lo, dB (std::sqrt (sum / std::max (n,1))));
+        }
+        std::printf ("  'swell' is how far the gain climbs back between hits — a loop that\n");
+        std::printf ("  breathes against one that sits still. Loud must stay put.\n\n");
+    }
+
     // The ATTACK control. Two things have to hold: it must measurably do
     // something across its WHOLE travel — a control that is dead in half its
     // range is a bug — and it must not move the loudness, or "more punch" would
