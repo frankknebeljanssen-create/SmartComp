@@ -645,22 +645,29 @@ int main()
             for (int i = (int)(skip * SR); i < (int) x.size(); ++i) { sum += (double) x[i]*x[i]; ++n; }
             return dB (std::sqrt (sum / std::max (n, 1)));
         };
-        auto gatedDB = [] (const std::vector<float>& x, double skip) {
+        // Paired gating: the blocks are chosen ONCE from the reference (the
+        // bypassed signal) and both sides are then measured over exactly those
+        // blocks. Gating each side against its own average is the same mistake
+        // the plugin had — the gappy side loses its quiet blocks, the squashed
+        // side keeps them, and the squashed side reads high for no reason but
+        // the metric. That is a comparison of two different window sets.
+        auto pairedDB = [] (const std::vector<float>& ref, const std::vector<float>& x, double skip) {
             const int w = (int)(0.4 * SR);
-            std::vector<double> blocks;
-            for (int q = (int)(skip * SR); q + w <= (int) x.size(); q += w) {
-                double sum = 0.0;
-                for (int i = 0; i < w; ++i) sum += (double) x[q+i]*x[q+i];
-                blocks.push_back (sum / w);
+            std::vector<double> rb, xb;
+            for (int q = (int)(skip * SR); q + w <= (int) ref.size() && q + w <= (int) x.size(); q += w) {
+                double r = 0.0, v = 0.0;
+                for (int i = 0; i < w; ++i) { r += (double) ref[q+i]*ref[q+i]; v += (double) x[q+i]*x[q+i]; }
+                rb.push_back (r / w); xb.push_back (v / w);
             }
-            if (blocks.empty()) return -100.0;
-            double mean = 0.0; for (double b : blocks) mean += b; mean /= blocks.size();
-            double gs = 0.0; int gn = 0;
-            for (double b : blocks) if (b > mean * 0.1) { gs += b; ++gn; }
-            return dB (std::sqrt (gs / std::max (gn, 1)));
+            if (rb.empty()) return -100.0;
+            double mean = 0.0; for (double b : rb) mean += b; mean /= rb.size();
+            double s2 = 0.0; int n = 0;
+            for (size_t i = 0; i < rb.size(); ++i) if (rb[i] > mean * 0.1) { s2 += xb[i]; ++n; }
+            return dB (std::sqrt (s2 / std::max (n, 1)));
         };
+
         auto render = [&] (const std::vector<float>& L, const std::vector<float>& R,
-                           float knob, bool trueLevel, bool bypass) {
+                           float knob, bool trueLevel, bool bypass, bool autoMode = false) {
             SmartCompProcessor p;
             p.setPlayConfigDetails (2, 2, SR, BLOCK);
             p.prepareToPlay (SR, BLOCK);
@@ -668,7 +675,7 @@ int main()
             p.apvts.getParameter ("gate")->setValueNotifyingHost (0.0f);
             p.apvts.getParameter ("comp")->setValueNotifyingHost (knob / 36.0f);
             p.apvts.getParameter ("bypass")->setValueNotifyingHost (bypass ? 1.0f : 0.0f);
-            p.rideMode.store (false);
+            p.rideMode.store (autoMode);
             p.honestMode.store (trueLevel);
             std::vector<float> out;
             juce::AudioBuffer<float> buf (2, BLOCK);
@@ -680,7 +687,7 @@ int main()
                 const float* o = buf.getReadPointer (0);
                 out.insert (out.end(), o, o + BLOCK);
             }
-            return std::pair<double,double> { wholeDB (out, 6.0), gatedDB (out, 6.0) };
+            return out;
         };
         std::vector<float> bL, bR, vL, vR;
         makeBreakbeat (bL, bR, 24.0);
@@ -688,27 +695,49 @@ int main()
         // Across source levels too: the wall's drive is clamped at zero, so a
         // source already louder than its target gets none of it while the
         // compressor still takes its reduction out.
-        std::printf ("  %-16s %19s %19s\n", "", "ungated  TLon-byp", "gated  TLon-byp");
+        std::printf ("  %-16s %19s %19s\n", "", "ungated  TLon-byp", "paired  TLon-byp");
         for (double g : { -12.0, 0.0, +9.0, +15.0 }) {
             std::vector<float> aL (vL), aR (vR);
             const double m = lin (g);
             for (size_t i = 0; i < aL.size(); ++i) { aL[i] = (float)(aL[i]*m); aR[i] = (float)(aR[i]*m); }
             const auto vb = render (aL, aR, 36.0f, false, true);
             const auto v1 = render (aL, aR, 36.0f, true,  false);
-            std::printf ("  VO k36 src %+3.0f %10.2f %+8.2f %10.2f %+8.2f\n",
-                         g, v1.first, v1.first - vb.first, v1.second, v1.second - vb.second);
+            std::printf ("  VO k36 src %+3.0f %10.2f %+8.2f %10.2f %+8.2f\n", g,
+                         wholeDB (v1, 6.0), wholeDB (v1, 6.0) - wholeDB (vb, 6.0),
+                         pairedDB (vb, v1, 6.0), pairedDB (vb, v1, 6.0) - pairedDB (vb, vb, 6.0));
         }
         std::printf ("\n");
-        std::printf ("  %-16s %19s %19s\n", "", "ungated  TLon-byp", "gated  TLon-byp");
+        // With AUTO engaged the knob does not stay where it is put — the rubber
+        // band pulls it back to the sweet spot near 10 — so "turn it to 36" does
+        // not reach the wall at all. Worth measuring, because it is the obvious
+        // way for a listening test to disagree with a headless one.
+        std::printf ("  %-16s %19s %19s\n", "", "ungated  TLon-byp", "paired  TLon-byp");
+        for (float knob : { 36.0f }) {
+            const auto vb = render (vL, vR, knob, false, true,  true);
+            const auto v1 = render (vL, vR, knob, true,  false, true);
+            std::printf ("  VO k36 AUTO on %10.2f %+8.2f %10.2f %+8.2f\n",
+                         wholeDB (v1, 6.0), wholeDB (v1, 6.0) - wholeDB (vb, 6.0),
+                         pairedDB (vb, v1, 6.0), pairedDB (vb, v1, 6.0) - pairedDB (vb, vb, 6.0));
+            const auto bb2 = render (bL, bR, knob, false, true,  true);
+            const auto b12 = render (bL, bR, knob, true,  false, true);
+            std::printf ("  BB k36 AUTO on %10.2f %+8.2f %10.2f %+8.2f\n",
+                         wholeDB (b12, 6.0), wholeDB (b12, 6.0) - wholeDB (bb2, 6.0),
+                         pairedDB (bb2, b12, 6.0), pairedDB (bb2, b12, 6.0) - pairedDB (bb2, bb2, 6.0));
+        }
+        std::printf ("\n");
+
+        std::printf ("  %-16s %19s %19s\n", "", "ungated  TLon-byp", "paired  TLon-byp");
         for (float knob : { 12.0f, 24.0f, 36.0f }) {
             const auto bb = render (bL, bR, knob, false, true);
             const auto b1 = render (bL, bR, knob, true,  false);
-            std::printf ("  BB comp %-8d %10.2f %+8.2f %10.2f %+8.2f\n",
-                         (int) knob, b1.first, b1.first - bb.first, b1.second, b1.second - bb.second);
+            std::printf ("  BB comp %-8d %10.2f %+8.2f %10.2f %+8.2f\n", (int) knob,
+                         wholeDB (b1, 6.0), wholeDB (b1, 6.0) - wholeDB (bb, 6.0),
+                         pairedDB (bb, b1, 6.0), pairedDB (bb, b1, 6.0) - pairedDB (bb, bb, 6.0));
             const auto vb = render (vL, vR, knob, false, true);
             const auto v1 = render (vL, vR, knob, true,  false);
-            std::printf ("  VO comp %-8d %10.2f %+8.2f %10.2f %+8.2f\n",
-                         (int) knob, v1.first, v1.first - vb.first, v1.second, v1.second - vb.second);
+            std::printf ("  VO comp %-8d %10.2f %+8.2f %10.2f %+8.2f\n", (int) knob,
+                         wholeDB (v1, 6.0), wholeDB (v1, 6.0) - wholeDB (vb, 6.0),
+                         pairedDB (vb, v1, 6.0), pairedDB (vb, v1, 6.0) - pairedDB (vb, vb, 6.0));
         }
         std::printf ("\n");
     }
