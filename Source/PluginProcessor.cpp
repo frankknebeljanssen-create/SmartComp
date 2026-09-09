@@ -6,6 +6,11 @@
 static constexpr float SLAM_REL_MS        = 25.0f;   // both release times converge here
 static constexpr float SLAM_TARGET_DB     = -11.0f;  // detector-domain level the wall sits at
 static constexpr float SLAM_MAX_DRIVE_DB  =  36.0f;  // most the drive may lift a quiet source
+// How fast AUTO's rubber band pulls the knob back to the sweet spot: gentle
+// for a small correction, hard when it has been dragged far out.
+static constexpr float RIDE_RETURN_NEAR_SEC = 0.50f;   // a couple of units out
+static constexpr float RIDE_RETURN_FAR_SEC  = 0.20f;   // dragged 20+ units out
+
 static constexpr float SLAM_MAKEUP_MAX_DB =  60.0f;
 
 SmartCompProcessor::SmartCompProcessor()
@@ -442,16 +447,33 @@ void SmartCompProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Mi
             rideSmoothedComp = juce::jlimit(0.0f, 36.0f, -compDB);
         } else {
             // Asymmetric: move up quickly when the material needs more
-            // compression, ease down slowly — both for a breath/pause not to
-            // back it off, and so the return after a manual drag is a visible
-            // glide rather than a jump. 0.4s was too close to instant-looking
-            // once the drag-time convergence bug above was fixed; 0.9s takes
-            // about 2.5s to look fully settled.
+            // compression, ease back down more gently, so a breath or a pause
+            // does not back the compression off.
+            //
+            // The downward move is a rubber band, and the tension scales with
+            // how far it has been pulled. A one-pole is already fastest when it
+            // is furthest from the target, but with a FIXED time constant the
+            // trip always looks the same length: dragging 23 units into the red
+            // took as long to come back as a 3 unit nudge, which is what made a
+            // big drag feel sluggish. Scaling the time constant with the
+            // distance too is what makes it read as tension rather than drift —
+            // it pulls hard from far out and eases in as it arrives.
             const float direction = target - rideSmoothedComp;
             float smoothTime;
-            if (direction > 0.2f)       smoothTime = 0.10f;   // needs more comp — follow fast
-            else if (direction < -0.2f) smoothTime = 0.90f;   // returning/pause — visibly slow
-            else                        smoothTime = 0.15f;   // near target — gentle
+            if (direction > 0.2f)
+            {
+                smoothTime = 0.10f;                       // needs more comp — follow fast
+            }
+            else if (direction < -0.2f)
+            {
+                const float stretch = juce::jlimit(0.0f, 1.0f, (-direction - 2.0f) / 18.0f);
+                smoothTime = RIDE_RETURN_NEAR_SEC
+                           + stretch * (RIDE_RETURN_FAR_SEC - RIDE_RETURN_NEAR_SEC);
+            }
+            else
+            {
+                smoothTime = 0.15f;                       // near target — gentle
+            }
 
             const float k = std::exp(-(float)numSamples / (currentSampleRate * smoothTime));
             rideSmoothedComp = rideSmoothedComp * k + target * (1.0f - k);
