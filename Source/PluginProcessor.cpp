@@ -117,6 +117,7 @@ void SmartCompProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
     smoothedInMS = 0.0f;
     smoothedOutMS = 0.0f;
     slowInMS = 0.0f; slowOutMS = 0.0f; slowPredictedDB = 0.0f; slowPredictedPrimed = false;
+    gatedInMS = 0.0f; gatedOutMS = 0.0f;
     smoothedInLUFS = 0.0f;
     smoothedOutLUFS = 0.0f;
     smoothedPeakDB = -60.0f;
@@ -276,13 +277,20 @@ void SmartCompProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Mi
         const float sm = std::exp(-(float)numSamples / (float)(currentSampleRate * MAKEUP_SEC));
         slowInMS = slowInMS * sm + blockInMS * trimSq * (1.0f - sm);
         if (! std::isfinite(slowInMS) || slowInMS < 0.0f) slowInMS = 0.0f;
+        // Relative gate, BS.1770 style: 10 dB below the ungated average.
+        if (blockInMS * trimSq > gatedInMS * 0.1f || gatedInMS <= 0.0f) {
+            gatedInMS = gatedInMS * lufsSmooth + blockInMS * trimSq * (1.0f - lufsSmooth);
+            if (! std::isfinite(gatedInMS) || gatedInMS < 0.0f) gatedInMS = 0.0f;
+        }
     }
     if (! std::isfinite(smoothedInMS) || smoothedInMS < 0.0f) smoothedInMS = 0.0f;
     // Input is measured before In Trim, but trim is a pure gain, so scaling the
     // result is exact and avoids HONEST fighting the user's trim: pull trim down
     // and it used to try to put up to 6 dB back.
     smoothedInLUFS = std::sqrt(smoothedInMS) * std::pow(10.0f, inTrimDB / 20.0f);
-    inputRMS.store(smoothedInLUFS);
+    // The bars show the same gated loudness the match works from, so that a
+    // matched signal reads as two aligned bars rather than two that disagree.
+    inputRMS.store(std::sqrt(gatedInMS));
 
     // === Signal analysis for Sweet Spot ===
     // Improved algorithm: uses input level + crest factor to compute
@@ -707,6 +715,10 @@ void SmartCompProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Mi
                 const float smSlow = std::exp(-(float)numSamples / (float)(currentSampleRate * MAKEUP_SEC));
                 slowOutMS = slowOutMS * smSlow + blockMS * (1.0f - smSlow);
                 if (! std::isfinite(slowOutMS) || slowOutMS < 0.0f) slowOutMS = 0.0f;
+                if (blockMS > gatedOutMS * 0.1f || gatedOutMS <= 0.0f) {
+                    gatedOutMS = gatedOutMS * sm + blockMS * (1.0f - sm);
+                    if (! std::isfinite(gatedOutMS) || gatedOutMS < 0.0f) gatedOutMS = 0.0f;
+                }
             }
 
             float makeupLin = std::pow(10.0f, makeupDB / 20.0f);
@@ -724,11 +736,11 @@ void SmartCompProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Mi
             // 5. Gain match, from the pre-makeup measurement above plus the
             // makeup applied analytically.
             {
-                const float preMakeupDB = (smoothedOutMS > 1.0e-20f)
-                                        ? 10.0f * std::log10(smoothedOutMS) : -100.0f;
+                const float preMakeupDB = (gatedOutMS > 1.0e-20f)
+                                        ? 10.0f * std::log10(gatedOutMS) : -100.0f;
                 smoothedOutLUFS = std::sqrt(smoothedOutMS) * makeupLin;   // for the UI
 
-                float inLevelDB = (smoothedInLUFS > 1e-10f) ? 20.0f * std::log10(smoothedInLUFS) : -100.0f;
+                float inLevelDB = (gatedInMS > 1.0e-20f) ? 10.0f * std::log10(gatedInMS) : -100.0f;
                 float outLevelDB = preMakeupDB + makeupDB;
                 if (inLevelDB > -50.0f && outLevelDB > -50.0f) {
                     // Both large terms are known rather than measured. Makeup is
@@ -762,15 +774,17 @@ void SmartCompProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Mi
                     float diffDB = juce::jlimit(-(SLAM_MAKEUP_MAX_DB), 6.0f,
                                                 fastResidualDB + matchResidualDB - makeupDB);
                     gainMatchOffsetDB.store(diffDB);
+                    matchPreviewDB.store(diffDB);
                 } else {
                     float prevOffset = gainMatchOffsetDB.load();
                     float fadeCoeff = std::exp(-(float)numSamples / (float)(currentSampleRate * 0.100f));
                     gainMatchOffsetDB.store(prevOffset * fadeCoeff);
+                    matchPreviewDB.store(matchPreviewDB.load() * fadeCoeff);
                 }
             }
 
             // 6. Apply gain match (HONEST mode) — per-sample interpolated with slew limit
-            if (gainMatchEnabled.load() || honestMode.load()) {
+            if (honestMode.load()) {
                 // Already slew-limited where it is computed, and its makeup
                 // half is deliberately not — re-limiting it here would put the
                 // lag straight back. Per-sample interpolation below still keeps
@@ -926,7 +940,7 @@ void SmartCompProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Mi
     }
     outputPeakL.store(outPL); outputPeakR.store(outPR);
     outputClipping.store(outPL > 0.999f || outPR > 0.999f);
-    outputRMS.store(smoothedOutLUFS);
+    outputRMS.store(std::sqrt(gatedOutMS) * std::pow(10.0f, compressor.displayMakeupDB / 20.0f));
 
     compGainReductionDB.store(bypassed ? 0.0f : compressor.getGainReductionDB());
     limiterGainReductionDB.store(bypassed ? 0.0f : limiter.getGainReductionDB());

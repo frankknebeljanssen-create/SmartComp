@@ -66,7 +66,7 @@ the only thing that drives into it. Reported latency is 158 samples at
 |---|---|---|
 | **Compression** | 0–36 | The main knob. Auto-tracking threshold and ratio; a wall above 24. |
 | **AUTO** | on/off | Drives the knob to the sweet spot and keeps following it. |
-| **TRUE LEVEL** | on/off | Matches output loudness to input, so you hear character rather than volume. |
+| **TRUE LEVEL** | on/off | Holds output loudness equal to the input, so you can compare settings — or the plugin against bypass — without the louder one winning by being louder. The figure beside it reads in both states: engaged it is what the match is applying, disengaged it is what engaging it would cost. Below knob 24 that is a fraction of a dB, because the makeup already holds loudness there; at the top of the knob it is the wall's 14 to 16 dB. |
 | **Gate** | −80 to −20 dB | Noise gate, off at minimum. Its threshold is drawn on the input meter, with the current attenuation next to it. |
 | **SC HP Filter** | 0–400 Hz | High-pass on the detector only, so bass does not pump the gain reduction. The panel draws its actual response. |
 | **Mix** | 0–100% | Parallel compression blend, latency-compensated. |

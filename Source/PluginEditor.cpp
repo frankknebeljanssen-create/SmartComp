@@ -35,20 +35,6 @@ SmartCompEditor::SmartCompLookAndFeel::SmartCompLookAndFeel()
     setColour(juce::TextButton::textColourOffId, C::label);
 }
 
-void SmartCompEditor::SmartCompLookAndFeel::drawButtonBackground(juce::Graphics& g, juce::Button& btn, const juce::Colour&, bool, bool)
-{
-    if (btn.getButtonText() == "MATCH") {
-        auto b = btn.getLocalBounds().toFloat();
-        auto* editor = dynamic_cast<SmartCompEditor*>(btn.getParentComponent());
-        bool matchOn = editor ? editor->processor.gainMatchEnabled.load() : false;
-        g.setColour(matchOn ? C::accent.withAlpha(0.12f) : C::card);
-        g.fillRoundedRectangle(b, 5.0f);
-        g.setColour(matchOn ? C::accent.withAlpha(0.5f) : C::border);
-        g.drawRoundedRectangle(b, 5.0f, 1.0f);
-        btn.setColour(juce::TextButton::textColourOffId, matchOn ? C::accent : C::label);
-    }
-}
-
 void SmartCompEditor::SmartCompLookAndFeel::drawToggleButton(juce::Graphics& g, juce::ToggleButton& btn, bool over, bool down)
 {
     auto b = btn.getLocalBounds().toFloat().reduced(2);
@@ -285,10 +271,7 @@ SmartCompEditor::SmartCompEditor(SmartCompProcessor& p)
     bypassAttach = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment>(processor.apvts, "bypass", bypassBtn);
 
     // Match button (hidden — we use pill rects)
-    matchBtn.setButtonText("MATCH");
-    matchBtn.onClick = [this] { bool on = !processor.gainMatchEnabled.load(); processor.gainMatchEnabled.store(on); repaint(); };
-    addAndMakeVisible(matchBtn);
-    matchBtn.setVisible(false);
+
 
     // ADV panel sliders
     auto setupAdv = [&](juce::Slider& s, juce::Label& l, const juce::String& name, const juce::String& lbl) {
@@ -360,7 +343,7 @@ void SmartCompEditor::timerCallback()
         float outLUFS = outRMS > 1e-8f ? 20.0f * std::log10(outRMS) : -60.0f;
         displayInLUFS = displayInLUFS * 0.85f + inLUFS * 0.15f;
         displayOutLUFS = displayOutLUFS * 0.85f + outLUFS * 0.15f;
-        displayOffsetDB = displayOffsetDB * 0.9f + processor.gainMatchOffsetDB.load() * 0.1f;
+        displayOffsetDB = displayOffsetDB * 0.9f + processor.matchPreviewDB.load() * 0.1f;
     }
     peakHoldCounter++;
     auto uph = [&](float& ph, float c) { if (c > ph) { ph = c; peakHoldCounter = 0; } };
@@ -881,13 +864,14 @@ void SmartCompEditor::paint(juce::Graphics& g)
 
         // OFFSET readout — right inside
         g.setFont(juce::Font("Arial", 12.0f, juce::Font::bold));
-        if (trueOn) {
+        // The number reads in both states. Engaged it is what the match is
+        // applying; disengaged it is what engaging it would cost — which is the
+        // answer to "does this switch do anything?", and it is 0.3 dB down here
+        // and 16 dB at the top of the knob.
+        {
             juce::String offStr = (displayOffsetDB >= 0 ? "+" : "") + juce::String(displayOffsetDB, 1);
-            g.setColour(C::accent);
+            g.setColour(trueOn ? C::accent : inactiveCol.withAlpha(0.75f));
             g.drawText(offStr, trueX + trueW - 48, trueCardY, 42, trueCardH, juce::Justification::centredRight);
-        } else {
-            g.setColour(inactiveCol.withAlpha(0.5f));
-            g.drawText("OFF", trueX + trueW - 48, trueCardY, 42, trueCardH, juce::Justification::centredRight);
         }
     }
 

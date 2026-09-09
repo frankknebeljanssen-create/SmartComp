@@ -48,7 +48,11 @@ public:
     std::atomic<float> inputRMS { 0.0f };
     std::atomic<float> outputRMS { 0.0f };
     std::atomic<float> gainMatchOffsetDB { 0.0f };
-    std::atomic<bool> gainMatchEnabled { false };
+    // What the match WOULD apply, written whether or not it is engaged. The
+    // applied value above is zeroed when the switch is off, so reading that for
+    // the display blanked the one instrument that answers "does this do
+    // anything?" in exactly the state where the question gets asked.
+    std::atomic<float> matchPreviewDB { 0.0f };
     std::atomic<bool> honestMode { false };  // Auto loudness match — hear only character, not volume
 
     // True when output exceeds 0dBFS
@@ -141,6 +145,13 @@ private:
     // genuinely has to be measured, so the part that follows the knob does not
     // have to wait for a measurement.
     float slowPredictedDB = 0.0f;
+    // The same energies again, but gated the way BS.1770 gates integrated
+    // loudness: blocks more than 10 dB below the running average do not count.
+    // Without it the match equalised total energy INCLUDING the pauses, and
+    // since compression lifts the gaps relative to the words, equal totals left
+    // the words quieter — measured, the match drifted 1.98 dB across the lower
+    // knob range on a vocal where leaving it off drifted 1.04.
+    float gatedInMS = 0.0f, gatedOutMS = 0.0f;
     bool  slowPredictedPrimed = false;
     float smoothedInLUFS = 0.0f;
     float smoothedOutLUFS = 0.0f;

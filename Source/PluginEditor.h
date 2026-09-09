@@ -37,7 +37,6 @@ public:
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> bypassAttach;
 
 
-    juce::TextButton matchBtn;
     bool showInfo = false;
     juce::Rectangle<int> logoRect, infoBtnRect, advToggleRect;
     
@@ -127,7 +126,6 @@ public:
     public:
         SmartCompLookAndFeel();
         void drawRotarySlider(juce::Graphics&, int, int, int, int, float, float, float, juce::Slider&) override;
-        void drawButtonBackground(juce::Graphics&, juce::Button&, const juce::Colour&, bool, bool) override;
         void drawToggleButton(juce::Graphics&, juce::ToggleButton&, bool, bool) override;
     };
 
