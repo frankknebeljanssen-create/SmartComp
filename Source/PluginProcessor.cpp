@@ -568,7 +568,8 @@ void SmartCompProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Mi
         // ATTACK: one travel value driving the envelope's attack and how much of
         // the lookahead window is spent. At AUTO both collapse to what shipped
         // before the control existed, so the vocal range is untouched.
-        const float attackTravel = apvts.getRawParameterValue("attack")->load();
+        const float attackTravel = apvts.getRawParameterValue("attack")->load()
+                                 * RVoxCompressor::attackAuthorityForKnob(compAmt01 * 36.0f);
         float attackMs = RVoxCompressor::attackMsForTravel(attackTravel);
         compressor.lookaheadBlend = RVoxCompressor::lookaheadBlendForTravel(attackTravel);
         const float slam01 = RVoxCompressor::slamForAmount(compAmt01);

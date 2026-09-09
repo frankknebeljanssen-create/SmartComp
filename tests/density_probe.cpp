@@ -704,6 +704,24 @@ int main (int argc, char** argv)
             crest = dB (pk) - loud;
         };
 
+        // Also on a constant-level drum train, where there is no material
+        // variation for a loudness error to hide behind.
+        {
+            std::vector<float> cL, cR; makeConstantDrums (cL, cR, 20.0);
+            std::printf ("ATTACK — loudness on a constant-level source (must not move)\n");
+            for (float knob : { 18.0f, 24.0f, 30.0f }) {
+                std::printf ("  comp %-3d ", (int) knob);
+                double base = 0.0;
+                for (float tr : { 0.0f, 25.0f, 50.0f, 75.0f, 100.0f }) {
+                    double c, l; run (cL, cR, knob, tr, c, l);
+                    if (tr == 0.0f) base = l;
+                    std::printf (" %+7.2f", l - base);
+                }
+                std::printf ("   (travel 0/25/50/75/100, dB relative to AUTO)\n");
+            }
+            std::printf ("\n");
+        }
+
         std::printf ("ATTACK — output crest (transient over body) and loudness\n");
         std::printf ("  %-8s %7s | %8s %8s | %8s %8s | %8s\n",
                      "travel", "ms", "BBk24 cr", "BBk24 ld", "BBk36 cr", "BBk36 ld", "VOk24 cr");

@@ -412,9 +412,9 @@ void SmartCompEditor::timerCallback()
     // Dim it there rather than let it look live while doing nothing.
     {
         const float compNow = processor.apvts.getRawParameterValue("comp")->load();
-        const float wallFade = 1.0f - juce::jlimit(0.0f, 1.0f, (compNow - 28.0f) / 6.0f) * 0.6f;
-        attackSlider.setAlpha(knobAlpha * wallFade);
-        attackLabel.setAlpha(knobAlpha * wallFade);
+        const float authority = RVoxCompressor::attackAuthorityForKnob(compNow);
+        attackSlider.setAlpha(knobAlpha * (0.35f + 0.65f * authority));
+        attackLabel.setAlpha(knobAlpha * (0.35f + 0.65f * authority));
     }
 
     repaint();

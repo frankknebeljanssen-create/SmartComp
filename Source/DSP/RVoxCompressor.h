@@ -56,6 +56,22 @@ public:
     static constexpr float ATK_MIN_MS   = 0.10f;   // what AUTO has always used
     static constexpr float ATK_MAX_MS   = 20.0f;
 
+    // The wall takes back what a slower attack lets through: measured, the
+    // control's crest range collapses from 4.2 dB at knob 24 to 0.6 dB at knob
+    // 36, while its loudness drift grows to 1.1 dB. Trading a dB of level for
+    // half a dB of punch is a bad deal, so the control is faded out over the
+    // same span instead — and the knob dims in step with this, because it dims
+    // for a reason rather than as decoration. One copy of the law, read by the
+    // processor and the editor both.
+    static constexpr float ATK_WALL_START = 28.0f;   // knob units
+    static constexpr float ATK_WALL_END   = 34.0f;
+
+    static float attackAuthorityForKnob (float knob)
+    {
+        return 1.0f - juce::jlimit (0.0f, 1.0f,
+                                    (knob - ATK_WALL_START) / (ATK_WALL_END - ATK_WALL_START));
+    }
+
     static bool  attackIsAuto (float travel) { return travel <= ATK_AUTO_END; }
 
     static float attackTravelNorm (float travel)
