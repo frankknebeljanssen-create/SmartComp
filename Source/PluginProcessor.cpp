@@ -8,6 +8,7 @@ static constexpr float SLAM_TARGET_DB     = -11.0f;  // detector-domain level th
 static constexpr float SLAM_MAX_DRIVE_DB  =  36.0f;  // most the drive may lift a quiet source
 // How fast AUTO's rubber band pulls the knob back to the sweet spot: gentle
 // for a small correction, hard when it has been dragged far out.
+static constexpr float MAKEUP_SEC = 5.0f;
 static constexpr float RIDE_RETURN_NEAR_SEC = 0.50f;   // a couple of units out
 static constexpr float RIDE_RETURN_FAR_SEC  = 0.20f;   // dragged 20+ units out
 
@@ -109,13 +110,13 @@ void SmartCompProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
     prevOffsetLin = 1.0f;
     prevMixWet = 1.0f;
     prevOutTrimLin = 1.0f;
-    smoothedMakeupGR = 0.0f;
     matchResidualDB = 0.0f;
     dcBlockL = dcBlockR = dcPrevInL = dcPrevInR = 0.0f;
     prevBypassed = false;
 
     smoothedInMS = 0.0f;
     smoothedOutMS = 0.0f;
+    slowInMS = 0.0f; slowOutMS = 0.0f;
     smoothedInLUFS = 0.0f;
     smoothedOutLUFS = 0.0f;
     smoothedPeakDB = -60.0f;
@@ -269,6 +270,13 @@ void SmartCompProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Mi
     // Block-size independent smoothing: ~800ms time constant (slow enough for knob changes)
     float lufsSmooth = std::exp(-(float)numSamples / (float)(currentSampleRate * 0.800));
     smoothedInMS = smoothedInMS * lufsSmooth + blockInMS * (1.0f - lufsSmooth);
+    // Post-trim, because that is what the compressor is fed.
+    {
+        const float trimSq = std::pow(10.0f, inTrimDB / 10.0f);
+        const float sm = std::exp(-(float)numSamples / (float)(currentSampleRate * MAKEUP_SEC));
+        slowInMS = slowInMS * sm + blockInMS * trimSq * (1.0f - sm);
+        if (! std::isfinite(slowInMS) || slowInMS < 0.0f) slowInMS = 0.0f;
+    }
     if (! std::isfinite(smoothedInMS) || smoothedInMS < 0.0f) smoothedInMS = 0.0f;
     // Input is measured before In Trim, but trim is a pure gain, so scaling the
     // result is exact and avoids HONEST fighting the user's trim: pull trim down
@@ -585,16 +593,25 @@ void SmartCompProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Mi
             // limiter downstream was already working, and from Comp 12 up it sat
             // in continuous double-digit reduction. That is what made the plugin
             // sound loud and flat regardless of setting.
+            // Makeup is applied after the compressor, so it never feeds back
+            // into the detector.
+            // Makeup replaces the loudness the compressor actually removed,
+            // measured as K-weighted energy either side of it rather than as a
+            // time-average of the reduction it reported. Those are not the same
+            // number on anything with pauses: energy sits exactly where the
+            // reduction is largest, so a time-average under-reads it. Measured,
+            // that gap made a vocal 4.5 dB quieter at knob 12 while the meter
+            // reported 1.5 dB of reduction, and 7.7 dB quieter by knob 24 —
+            // the knob got quieter the further it was turned up.
             //
-            // The averaging window matters: following GR instantly would cancel
-            // the compression exactly. At ~500 ms it restores level while the
-            // dynamics stay compressed. Makeup is applied after the compressor,
-            // so it never feeds back into the detector.
-            float makeupSmooth = std::exp(-(float)numSamples / (float)(currentSampleRate * 0.500));
-            smoothedMakeupGR = smoothedMakeupGR * makeupSmooth
-                             + compressor.getGainReductionDB() * (1.0f - makeupSmooth);
-            if (! std::isfinite(smoothedMakeupGR)) smoothedMakeupGR = 0.0f;
-            float makeupDB = juce::jlimit(0.0f, 24.0f, smoothedMakeupGR);
+            // The window is seconds, not the 500 ms the reduction average used.
+            // At 500 ms it sits in the band where musical dynamics live and
+            // cancels them; this only has to follow the setting, not the music.
+            // slowOutMS is one block behind, which is immaterial at this length.
+            float lossDB = (slowInMS > 1.0e-12f && slowOutMS > 1.0e-12f)
+                         ? 10.0f * std::log10(slowInMS / slowOutMS) : 0.0f;
+            if (! std::isfinite(lossDB)) lossDB = 0.0f;
+            float makeupDB = juce::jlimit(0.0f, 24.0f, lossDB);
 
             // Above knob 24 the servo is crossfaded OUT, not added to. Following
             // the delivered reduction restores the level and nothing more:
@@ -610,8 +627,9 @@ void SmartCompProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Mi
             // plus whatever it takes to put the programme at SLAM_TARGET_DB.
             // Referenced to the compressor's own programme level, so any source
             // lands in the same place and the drive cannot drift away from the
-            // threshold. smoothedMakeupGR keeps updating above regardless, so
-            // turning the knob back down re-engages the servo from a live value.
+            // threshold. The energy measurement below keeps running regardless,
+            // so turning the knob back down re-engages the makeup from a live
+            // value rather than from a stale one.
             // Not until the programme level has been measured: unprimed it
             // reads -60 dB, which asks for the full 36 dB of drive, so pressing
             // play used to lift the count-in by 36 dB and brickwall the first
@@ -648,6 +666,9 @@ void SmartCompProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Mi
                 const float sm = std::exp(-(float)numSamples / (float)(currentSampleRate * 0.800));
                 smoothedOutMS = smoothedOutMS * sm + blockMS * (1.0f - sm);
                 if (! std::isfinite(smoothedOutMS) || smoothedOutMS < 0.0f) smoothedOutMS = 0.0f;
+                const float smSlow = std::exp(-(float)numSamples / (float)(currentSampleRate * MAKEUP_SEC));
+                slowOutMS = slowOutMS * smSlow + blockMS * (1.0f - smSlow);
+                if (! std::isfinite(slowOutMS) || slowOutMS < 0.0f) slowOutMS = 0.0f;
             }
 
             float makeupLin = std::pow(10.0f, makeupDB / 20.0f);
@@ -690,8 +711,8 @@ void SmartCompProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Mi
                     // for a second: at the top the makeup's base is the law's
                     // predicted reduction, which moves instantly, while the
                     // reported one is a 500 ms average that does not.
-                    float baseResidualDB = smoothedMakeupGR
-                        + slam01 * (compressor.getStaticMakeupDB() - smoothedMakeupGR);
+                    float baseResidualDB = lossDB
+                        + slam01 * (compressor.getStaticMakeupDB() - lossDB);
                     const float fastResidualDB = juce::jlimit(0.0f, SLAM_MAKEUP_MAX_DB, baseResidualDB);
                     float trimDB = (inLevelDB - preMakeupDB) - fastResidualDB;
                     if (! std::isfinite(trimDB)) trimDB = 0.0f;

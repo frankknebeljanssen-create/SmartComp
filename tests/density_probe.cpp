@@ -146,6 +146,10 @@ void makeConstantDrums (std::vector<float>& L, std::vector<float>& R, double sec
 struct Stats
 {
     double meanDB = 0, sdDB = 0, p05 = 0, p95 = 0, minDB = 0, maxDB = 0, peakDB = 0;
+    // Energy, not the mean of dB values. Averaging dB weights the quiet windows
+    // far too heavily to stand in for loudness: it reported the vocal getting
+    // 6.8 dB QUIETER from knob 0 to 24 where the actual energy barely moves.
+    double loudDB = 0;
     double spread() const { return p95 - p05; }
 };
 
@@ -179,6 +183,11 @@ Stats analyse (const std::vector<float>& x, double skipSeconds, double floorRelD
 
     Stats st;
     st.peakDB = dB (truePeak);
+    {
+        double ms = 0.0;
+        for (double w : active) ms += std::pow (10.0, w / 10.0);
+        st.loudDB = dB (std::sqrt (ms / (double) active.size()));
+    }
     for (double w : active) st.meanDB += w;
     st.meanDB /= (double) active.size();
     for (double w : active) st.sdDB += (w - st.meanDB) * (w - st.meanDB);
@@ -339,8 +348,8 @@ Stats refIdealLeveler (const std::vector<float>& srcL, const std::vector<float>&
 
 void report (const char* label, const Stats& s, const Internals* in = nullptr)
 {
-    std::printf ("  %-18s  %7.2f  %6.2f  %7.2f  %7.2f",
-                 label, s.meanDB, s.sdDB, s.spread(), s.peakDB);
+    std::printf ("  %-18s  %7.2f  %7.2f  %7.2f  %7.2f",
+                 label, s.loudDB, s.meanDB, s.spread(), s.peakDB);
     if (in != nullptr)
         std::printf ("   %6.2f %6.2f %6.2f %6.2f",
                      in->grMean, in->grSD, in->limMean, in->gainSwing);
@@ -355,10 +364,10 @@ void runMaterial (const char* name,
     Stats in = analyse (sL, 3.0);
 
     std::printf ("%s\n", name);
-    std::printf ("  %-18s  %7s  %6s  %7s  %7s   %6s %6s %6s %6s\n",
-                 "", "meanDB", "sd", "p95-p05", "peak", "compGR", "grSD", "limGR", "pump");
+    std::printf ("  %-18s  %7s  %7s  %7s  %7s   %6s %6s %6s %6s\n",
+                 "", "loudDB", "meanDB", "p95-p05", "peak", "compGR", "grSD", "limGR", "pump");
     report ("input (untouched)", in);
-    for (float knob : { 12.0f, 24.0f, 36.0f })
+    for (float knob : { 6.0f, 12.0f, 18.0f, 24.0f, 30.0f, 36.0f })
     {
         Stats s = runChain (sL, sR, knob);
         report (("comp " + std::to_string ((int) knob)).c_str(), s, &lastInternals);
@@ -489,7 +498,7 @@ int main()
     {
         std::vector<float> sL, sR; makeConstantDrums (sL, sR, 20.0);
         std::printf ("PUMP ON A CONSTANT-LEVEL SOURCE (identical hits — any swing is pumping)\n");
-        for (float knob : { 12.0f, 24.0f, 36.0f }) {
+        for (float knob : { 6.0f, 12.0f, 18.0f, 24.0f, 30.0f, 36.0f }) {
             runChain (sL, sR, knob);
             std::printf ("  comp %2d -> gain swing %6.2f dB   (compGR %5.2f, limGR %4.2f)\n",
                          (int) knob, lastInternals.gainSwing, lastInternals.grMean, lastInternals.limMean);

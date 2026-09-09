@@ -117,7 +117,6 @@ private:
     float prevOffsetLin = 1.0f;
     float prevMixWet = 1.0f;
     float prevOutTrimLin = 1.0f;
-    float smoothedMakeupGR = 0.0f;   // slow average of delivered GR, drives makeup
     float matchResidualDB = 0.0f;    // TRUE LEVEL's slow half; the makeup half is exact
 
     // K-weighted loudness (LUFS) for gain match
@@ -133,6 +132,10 @@ private:
     // BS.1770 integrates power, not amplitude.
     float smoothedInMS = 0.0f;
     float smoothedOutMS = 0.0f;
+    // Slow K-weighted energy either side of the compressor. Their ratio is the
+    // loudness the compressor actually removed — the quantity makeup is meant
+    // to replace, and the one a time-average of gain reduction gets wrong.
+    float slowInMS = 0.0f, slowOutMS = 0.0f;
     float smoothedInLUFS = 0.0f;
     float smoothedOutLUFS = 0.0f;
 
