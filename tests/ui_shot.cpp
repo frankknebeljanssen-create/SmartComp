@@ -88,6 +88,10 @@ public:
         // can be photographed at all.
         if (args.size() > 2 && args[2].getIntValue() != 0)
             openAdv = true;
+        // Fourth argument: the RELEASE note, so the groove strip can be
+        // photographed at more than one setting.
+        if (args.size() > 3)
+            relNote = juce::jlimit(0, 5, args[3].getIntValue());
 
         processor = std::make_unique<SmartCompProcessor>();
         processor->prepareToPlay(kSampleRate, kBlockSize);
@@ -99,6 +103,7 @@ public:
         processor->apvts.getParameter("comp")->setValueNotifyingHost(
             (useFixedComp ? fixedComp : 18.0f) / 36.0f);
         processor->apvts.getParameter("mix")->setValueNotifyingHost(1.0f);
+        processor->apvts.getParameter("release")->setValueNotifyingHost((float) relNote / 5.0f);
 
         // AUTO on for the default screenshot: it is the plugin's headline
         // feature, and the button state is only meaningful if it is shown
@@ -182,6 +187,7 @@ private:
     bool snapped = false;
     bool useFixedComp = false;
     bool openAdv = false;
+    int relNote = 0;
     float fixedComp = 0.0f;
     // 30 ticks/sec * 4 blocks * 512 samples / 44100 ~= 0.14s of audio-time per
     // tick. snapTick lands after ~3.5s of audio-time (enough for the sweet-spot

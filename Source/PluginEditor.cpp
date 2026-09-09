@@ -1011,12 +1011,34 @@ void SmartCompEditor::paint(juce::Graphics& g)
             const float barMs = beatMs * 4.0f;
             const float relMs = juce::jmax(1.0f, processor.effectiveReleaseMs.load());
 
-            // Beat grid: the downbeat brighter than the rest.
+            // Two grids. The beats say where the music is; the note division
+            // says how fast the release runs, and that is the one that has to
+            // change when the setting doubles — drawing only the beats meant
+            // nothing moved across the raster, just the bend of the curves.
+            const int relNoteNow = (int)std::lround(processor.apvts.getRawParameterValue("release")->load());
+            const float noteBeats = RVoxCompressor::releaseNoteFraction(relNoteNow);
+            if (noteBeats > 0.0f) {
+                const int ticks = juce::jlimit(1, 64, (int)std::lround(4.0f / noteBeats));
+                for (int i = 1; i < ticks; ++i) {
+                    const float tx = stripX + stripW * (i / (float)ticks);
+                    g.setColour(C::accent.withAlpha(0.22f));
+                    g.drawLine(tx, (float)stripY + 4.0f, tx, (float)(stripY + stripH) - 4.0f, 0.6f);
+                }
+                // One note length, marked, so the doubling is a length and not
+                // just a density.
+                const float spanW = stripW * (noteBeats / 4.0f);
+                const float spanY = (float)stripY + 4.0f;
+                g.setColour(C::accent.withAlpha(0.55f));
+                g.drawLine((float)stripX + 2.0f, spanY, (float)stripX + 2.0f + spanW, spanY, 1.4f);
+                g.drawLine((float)stripX + 2.0f, spanY - 2.0f, (float)stripX + 2.0f, spanY + 2.0f, 1.4f);
+                g.drawLine((float)stripX + 2.0f + spanW, spanY - 2.0f,
+                           (float)stripX + 2.0f + spanW, spanY + 2.0f, 1.4f);
+            }
             for (int b = 0; b < 4; ++b) {
                 const float bx = stripX + stripW * (b / 4.0f);
-                g.setColour(C::label.withAlpha(b == 0 ? 0.55f : 0.28f));
+                g.setColour(C::label.withAlpha(b == 0 ? 0.55f : 0.30f));
                 g.drawLine(bx, (float)stripY + 3.0f, bx, (float)(stripY + stripH) - 3.0f,
-                           b == 0 ? 1.2f : 0.7f);
+                           b == 0 ? 1.2f : 0.8f);
             }
 
             // The recovery after each beat's hit: ducked at the hit, climbing
@@ -1044,8 +1066,7 @@ void SmartCompEditor::paint(juce::Graphics& g)
 
             // What it is, in words and in milliseconds, so the doubling reads
             // numerically as well as visually.
-            const int relNote = (int)std::lround(processor.apvts.getRawParameterValue("release")->load());
-            juce::String txt = juce::String(RVoxCompressor::releaseNoteName(relNote))
+            juce::String txt = juce::String(RVoxCompressor::releaseNoteName(relNoteNow))
                              + "  " + juce::String((int)relMs) + " ms";
             if (bpm > 0.0f) txt += "  @ " + juce::String((int)bpm) + " BPM";
             g.setFont(juce::Font("Arial", 9.0f, juce::Font::plain));
@@ -1081,12 +1102,16 @@ void SmartCompEditor::paint(juce::Graphics& g)
                 juce::Colour col = open ? juce::Colour(0xff5dcaa5) : juce::Colour(0xffe0524a);
                 juce::String txt = open ? "open" : juce::String(redDB, 1) + " dB";
 
+                // Under the knob rather than beside the header: in a four-column
+                // row it sat on top of the word GATE.
                 auto gr = unscale(gateSlider.getBounds());
-                int dotX = gr.getCentreX() - 22, dotY = row1Y - 10;
+                int dotY = gr.getBottom() + 22;   // clear of the unit label
+                int textW = 44;
+                int dotX = gr.getCentreX() - textW / 2 - 4;
                 g.setColour(col);
                 g.fillEllipse((float)dotX, (float)dotY, 5.0f, 5.0f);
                 g.setFont(juce::Font("Arial", 9.0f, juce::Font::plain));
-                g.drawText(txt, dotX + 8, dotY - 4, 60, 12, juce::Justification::centredLeft);
+                g.drawText(txt, dotX + 8, dotY - 4, textW, 12, juce::Justification::centredLeft);
             }
         }
 
