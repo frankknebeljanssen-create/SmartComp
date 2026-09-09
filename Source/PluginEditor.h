@@ -105,10 +105,10 @@ public:
     // ADV panel
     bool advOpen = false;
     static constexpr int ADV_PANEL_H = 319;  // tlGap(12) + tl(155) + panelGap(12) + panel(170) - overlap(10)
-    juce::Slider inTrimSlider, scHpfSlider;
-    juce::Label inTrimLabel, scHpfLabel;
+    juce::Slider inTrimSlider, scHpfSlider, attackSlider;
+    juce::Label inTrimLabel, scHpfLabel, attackLabel;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment>
-        inTrimAttach, scHpfAttach;
+        inTrimAttach, scHpfAttach, attackAttach;
     int getBaseHeight() const {
         // +40px for knob padding (20 top + 20 bottom)
         return 536;

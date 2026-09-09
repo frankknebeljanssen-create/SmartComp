@@ -38,6 +38,13 @@ peaks on the ceiling. The readout says CRUSHED for a reason.
 
 Below knob 24 none of that is active, so the gentle range is untouched by it.
 
+The **ATTACK** knob in the ADV panel decides how much of a transient survives
+this. It moves two things at once, because in this design they say the same
+thing: the envelope's attack, and how much of the 1.5 ms lookahead is spent
+pre-empting the hit. Driving only one gives half a control — measured, each is
+worth about 4 dB on its own and they overlap almost completely. Reported latency
+does not move either way.
+
 **AUTO** drives the knob to where the compressor is delivering 3 to 5 dB on
 peaks — the usual place for a vocal — and follows the material. Drag the knob
 away and it holds while the mouse is down, then pulls back like a rubber band
@@ -115,6 +122,7 @@ the only thing that drives into it. Reported latency is 158 samples at
 | **AUTO** | on/off | Drives the knob to the sweet spot and keeps following it. |
 | **TRUE LEVEL** | on/off | Holds output loudness equal to the input, so you can compare settings — or the plugin against bypass — without the louder one winning by being louder. The figure beside it reads in both states: engaged it is what the match is applying, disengaged it is what engaging it would cost. Below knob 24 that is a fraction of a dB, because the makeup already holds loudness there; at the top of the knob it is the wall's 14 to 16 dB. |
 | **Gate** | −80 to −20 dB | Noise gate, off at minimum. Its threshold is drawn on the input meter, with the current attenuation next to it. |
+| **Attack** | AUTO, 0.1–20 ms | How much of a transient survives. At AUTO the peak is caught before it arrives and nothing gets through, which is what a vocal wants. Turn it up and the grab is delayed *and* the lookahead pre-emption is withdrawn together, so the hit punches through before the body is squashed. Measured on a drum loop at Comp 24 it moves the output crest by 4.2 dB while the loudness stays within 0.05 dB — you are hearing character, not level. Above Comp 30 the limiter takes back what it lets through, so the knob dims there rather than pretending. |
 | **SC HP Filter** | 0–400 Hz | High-pass on the detector only, so bass does not pump the gain reduction. The panel draws its actual response. |
 | **Mix** | 0–100% | Parallel compression blend, latency-compensated. |
 | **In Trim** | ±12 dB | Input gain, ahead of the detector. |

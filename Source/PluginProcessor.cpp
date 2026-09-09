@@ -56,6 +56,13 @@ juce::AudioProcessorValueTreeState::ParameterLayout SmartCompProcessor::createPa
     params.push_back(std::make_unique<juce::AudioParameterFloat>(
         juce::ParameterID("inTrim", 1), "In Trim",
         juce::NormalisableRange<float>(-12.0f, 12.0f, 0.1f), 0.0f));
+    // Added last on purpose: a host stores automation by index, so appending
+    // leaves every existing session's slots where they were. Sessions saved
+    // before this existed have no node for it and load at 0, which is AUTO —
+    // the behaviour they were saved with.
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(
+        juce::ParameterID("attack", 1), "Attack",
+        juce::NormalisableRange<float>(0.0f, 100.0f, 0.5f), 0.0f));
 
     return { params.begin(), params.end() };
 }
@@ -558,7 +565,12 @@ void SmartCompProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Mi
         // Attack/Release driven by comp amount — like RVox, always optimal
         // Fast attack + RMS detector + lookahead = consonants preserved naturally
         float compAmt01 = juce::jlimit(0.0f, 1.0f, -compDB / 36.0f);
-        float attackMs = 0.1f;  // near-instant, lookahead handles smoothing
+        // ATTACK: one travel value driving the envelope's attack and how much of
+        // the lookahead window is spent. At AUTO both collapse to what shipped
+        // before the control existed, so the vocal range is untouched.
+        const float attackTravel = apvts.getRawParameterValue("attack")->load();
+        float attackMs = RVoxCompressor::attackMsForTravel(attackTravel);
+        compressor.lookaheadBlend = RVoxCompressor::lookaheadBlendForTravel(attackTravel);
         const float slam01 = RVoxCompressor::slamForAmount(compAmt01);
         float relFastMs = 40.0f + (1.0f - compAmt01) * 40.0f;  // 40-80ms: tighter at high comp
         float relSlowMs = 400.0f + (1.0f - compAmt01) * 600.0f;  // 400-1000ms: shorter at high comp

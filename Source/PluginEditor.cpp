@@ -183,6 +183,15 @@ void SmartCompEditor::SmartCompLookAndFeel::drawRotarySlider(
         g.drawText(val < 1 ? "OFF" : juce::String(val), x, y, width, height, juce::Justification::centred);
     } else if (name == "Gate") {
         g.drawText(val <= -79 ? "OFF" : juce::String(val), x, y, width, height, juce::Justification::centred);
+    } else if (name == "Attack") {
+        // The bottom of the travel is a flat AUTO region, not a value.
+        if (RVoxCompressor::attackIsAuto(fval))
+            g.drawText("AUTO", x, y, width, height, juce::Justification::centred);
+        else {
+            const float ms = RVoxCompressor::attackMsForTravel(fval);
+            g.drawText(ms < 10.0f ? juce::String(ms, 1) : juce::String((int) ms),
+                       x, y, width, height, juce::Justification::centred);
+        }
     } else if (name == "In Trim" || name == "Gain") {
         // Both are bipolar trims, so the sign has to be visible
         juce::String txt = (fval > 0.05f ? "+" : "") + juce::String(fval, 1);
@@ -250,6 +259,8 @@ SmartCompEditor::SmartCompEditor(SmartCompProcessor& p)
     setup(inTrimSlider, inTrimLabel, "In Trim", "IN TRIM");
     setup(gainSlider, gainLabel, "Gain", "OUT GAIN");
     setup(mixSlider, mixLabel, "Mix", "MIX");
+    setup(attackSlider, attackLabel, "Attack", "ATTACK");
+    attackSlider.setDoubleClickReturnValue(true, 0.0f);   // back to AUTO
 
     // Double-click reset
     compSlider.setDoubleClickReturnValue(true, 0.0f);
@@ -291,6 +302,7 @@ SmartCompEditor::SmartCompEditor(SmartCompProcessor& p)
 
     setupAdv(scHpfSlider, scHpfLabel, "SC HPF", "SC HPF");
     scHpfAttach = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(processor.apvts, "schpf", scHpfSlider);
+    attackAttach = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(processor.apvts, "attack", attackSlider);
     scHpfSlider.setDoubleClickReturnValue(true, 0.0f);
 
     startTimerHz(60);
@@ -360,6 +372,9 @@ void SmartCompEditor::timerCallback()
         gateLabel.setText(gateVal <= -79.5f ? "OFF" : "dB", juce::dontSendNotification);
         float scHpfVal = processor.apvts.getRawParameterValue("schpf")->load();
         scHpfLabel.setText(scHpfVal < 1.0f ? "OFF" : "Hz", juce::dontSendNotification);
+        float atkVal = processor.apvts.getRawParameterValue("attack")->load();
+        attackLabel.setText(RVoxCompressor::attackIsAuto(atkVal) ? "AUTO" : "ms",
+                            juce::dontSendNotification);
     }
 
     // Tooltip hover detection in timer (works over child components)
@@ -375,6 +390,7 @@ void SmartCompEditor::timerCallback()
             else if (mixSlider.getBounds().contains(p)) hoveredElement = "mix";
             else if (gateSlider.isVisible() && gateSlider.getBounds().contains(p)) hoveredElement = "gate";
             else if (scHpfSlider.isVisible() && scHpfSlider.getBounds().contains(p)) hoveredElement = "schpf";
+            else if (attackSlider.isVisible() && attackSlider.getBounds().contains(p)) hoveredElement = "attack";
             else if (honestBtnRect.contains(bp)) hoveredElement = "true";
             else if (rideRect.contains(bp)) hoveredElement = "ride";
             else if (advToggleRect.contains(bp)) hoveredElement = "adv";
@@ -391,6 +407,15 @@ void SmartCompEditor::timerCallback()
     gateSlider.setAlpha(knobAlpha); gainSlider.setAlpha(knobAlpha); mixSlider.setAlpha(knobAlpha);
     scHpfSlider.setAlpha(knobAlpha);
     inTrimSlider.setAlpha(knobAlpha);
+    // Above Comp 28 the limiter takes back what a slower attack lets through —
+    // measured, the control's range collapses from 4.2 dB to 0.6 dB by Comp 36.
+    // Dim it there rather than let it look live while doing nothing.
+    {
+        const float compNow = processor.apvts.getRawParameterValue("comp")->load();
+        const float wallFade = 1.0f - juce::jlimit(0.0f, 1.0f, (compNow - 28.0f) / 6.0f) * 0.6f;
+        attackSlider.setAlpha(knobAlpha * wallFade);
+        attackLabel.setAlpha(knobAlpha * wallFade);
+    }
 
     repaint();
 }
@@ -938,21 +963,23 @@ void SmartCompEditor::paint(juce::Graphics& g)
         int knobCenterY = knobTopY + knobSzAdv / 2;
 
         // Knob labels + knobs. The left 66px used to hold the Delta and A/B
-        // pills; with those gone the knobs use the full panel width.
-        // Two knobs now that HPF is gone — Gate and SC HPF are the only ADV
-        // controls left, so they get half the panel width each instead of a third.
+        // pills; with those gone the knobs use the full panel width, shared
+        // between Gate, SC HPF and Attack.
         int knobAreaLeft = panelInnerX + 8;
         int knobAreaRight = panelInnerX + panelInnerW;
         int knobAreaW2 = knobAreaRight - knobAreaLeft;
-        int colW = knobAreaW2 / 2;
+        int colW = knobAreaW2 / 3;
         int row1Y = knobTopY;
         g.setFont(juce::Font("Arial", 10.0f, juce::Font::bold));
         g.setColour(C::label.brighter(0.3f));
         g.drawText("GATE", knobAreaLeft, row1Y - 14, colW, 12, juce::Justification::centred);
         g.drawText("SC HPF", knobAreaLeft + colW, row1Y - 14, colW, 12, juce::Justification::centred);
+        g.drawText("ATTACK", knobAreaLeft + colW * 2, row1Y - 14, colW, 12, juce::Justification::centred);
 
         gateSlider.setVisible(true); gateLabel.setVisible(true);
         scHpfSlider.setVisible(true); scHpfLabel.setVisible(true);
+        attackSlider.setVisible(true); attackLabel.setVisible(true);
+
 
         // Live gate state + SC HPF response curve. Slider bounds come back in
         // scaled screen pixels from resized(); paint() draws in the unscaled
@@ -1097,6 +1124,7 @@ void SmartCompEditor::paint(juce::Graphics& g)
             else if (hoveredElement == "mix") elBounds = unscaleRect(mixSlider.getBounds());
             else if (hoveredElement == "intrim") elBounds = unscaleRect(inTrimSlider.getBounds());
             else if (hoveredElement == "schpf") elBounds = unscaleRect(scHpfSlider.getBounds());
+            else if (hoveredElement == "attack") elBounds = unscaleRect(attackSlider.getBounds());
             else if (hoveredElement == "true") elBounds = honestBtnRect;
             else if (hoveredElement == "ride") elBounds = rideRect;
             else if (hoveredElement == "adv") elBounds = advToggleRect;
@@ -1849,6 +1877,7 @@ void SmartCompEditor::resized()
 
     if (!advOpen) {
         gateSlider.setVisible(false); gateLabel.setVisible(false);
+        attackSlider.setVisible(false); attackLabel.setVisible(false);
     }
 
     // ADV panel — two knobs (Gate, SC HPF) since HPF was removed
@@ -1860,7 +1889,7 @@ void SmartCompEditor::resized()
         int knobAreaLeft = panelX + 8;
         int knobAreaRight = panelX + advPanelW;
         int knobAreaW2 = knobAreaRight - knobAreaLeft;
-        int colW = knobAreaW2 / 2;
+        int colW = knobAreaW2 / 3;
 
         int knobBlockH = advKnobSz + 2 + 14;
         int knobTopY = panelTopY + (L.panelH - knobBlockH) / 2 + 6;
@@ -1873,9 +1902,11 @@ void SmartCompEditor::resized()
 
         placeAdvKnob(gateSlider, gateLabel, 0);
         placeAdvKnob(scHpfSlider, scHpfLabel, 1);
+        placeAdvKnob(attackSlider, attackLabel, 2);
 
         gateSlider.setVisible(true); gateLabel.setVisible(true);
         scHpfSlider.setVisible(true); scHpfLabel.setVisible(true);
+        attackSlider.setVisible(true); attackLabel.setVisible(true);
     }
 }
 
@@ -1984,6 +2015,22 @@ SmartCompEditor::TooltipInfo SmartCompEditor::getTooltipFor(const juce::String& 
         "Use to optimize the compressor's operating point for "
         "different source levels.",
         "Range: -12 to +12 dB | First stage in signal chain"
+    };
+    if (el == "attack") return {
+        "Attack",
+        "How much of a transient survives. At AUTO the compressor grabs the peak "
+        "before it arrives and nothing gets through — the right thing for a "
+        "vocal. Turn it up and the grab is delayed AND the lookahead is "
+        "withdrawn, so the hit punches through before the body is squashed. "
+        "Loudness does not change as you turn it, so what you hear is the "
+        "character and not the level.",
+        "AUTO = 0.1 ms with full 1.5 ms pre-emption, exactly as before\n"
+        "Manual: 0.1 to 20 ms, exponential taper\n"
+        "Lookahead pre-emption withdrawn across the same travel\n"
+        "Reported latency never changes — both gains come from one delay line\n"
+        "Measured on a drum loop at Comp 24: 4.2 dB of output crest,\n"
+        "loudness constant within 0.05 dB. Above Comp 30 the limiter\n"
+        "takes back what it lets through, so the effect fades there."
     };
     if (el == "schpf") return {
         "Sidechain HPF",

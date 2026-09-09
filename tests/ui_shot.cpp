@@ -84,6 +84,10 @@ public:
             fixedComp = juce::jlimit(0.0f, 36.0f, args[1].getFloatValue());
             useFixedComp = true;
         }
+        // Third argument opens the ADV panel, so the knobs that live in there
+        // can be photographed at all.
+        if (args.size() > 2 && args[2].getIntValue() != 0)
+            openAdv = true;
 
         processor = std::make_unique<SmartCompProcessor>();
         processor->prepareToPlay(kSampleRate, kBlockSize);
@@ -102,6 +106,11 @@ public:
         processor->rideMode.store(! useFixedComp);
 
         editor.reset(processor->createEditor());
+        if (openAdv)
+            if (auto* ed = dynamic_cast<SmartCompEditor*>(editor.get())) {
+                ed->advOpen = true;
+                ed->resized();
+            }
         editor->setVisible(true);
 
         window = std::make_unique<juce::DocumentWindow>(
@@ -172,6 +181,7 @@ private:
     int ticks = 0;
     bool snapped = false;
     bool useFixedComp = false;
+    bool openAdv = false;
     float fixedComp = 0.0f;
     // 30 ticks/sec * 4 blocks * 512 samples / 44100 ~= 0.14s of audio-time per
     // tick. snapTick lands after ~3.5s of audio-time (enough for the sweet-spot

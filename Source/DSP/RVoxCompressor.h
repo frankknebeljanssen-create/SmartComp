@@ -36,6 +36,47 @@ public:
     static constexpr float DRIVE_HOLD_DB     = 16.0f;   // full drive down to here
     static constexpr float DRIVE_FADE_DB     = 10.0f;   // and none this much further down
 
+    // ATTACK, as one number driving two things. The knob's own travel is 0..100
+    // with an AUTO flat at the bottom that is bit-identical to what shipped
+    // before it existed.
+    //
+    // The second thing is the lookahead, and it is the stronger half. This
+    // compressor targets the lowest gain found anywhere in its 1.5 ms window, so
+    // reduction is complete before a transient lands — which is precisely what a
+    // slow attack is supposed NOT to do. Measured on a drum loop at knob 24, the
+    // attack coefficient alone moves the output crest by 3.9 dB and retiring the
+    // lookahead alone by 4.4 dB; the two say almost the same thing, so driving
+    // them separately would give two overlapping half-controls. Driven together
+    // the travel is monotone end to end and worth 4.5 dB.
+    //
+    // Reported latency does not move: both the pre-emptive and the aligned gain
+    // come out of the same delay line, so this changes which gain is read, not
+    // how far the audio is delayed.
+    static constexpr float ATK_AUTO_END = 6.0f;    // travel below this means AUTO
+    static constexpr float ATK_MIN_MS   = 0.10f;   // what AUTO has always used
+    static constexpr float ATK_MAX_MS   = 20.0f;
+
+    static bool  attackIsAuto (float travel) { return travel <= ATK_AUTO_END; }
+
+    static float attackTravelNorm (float travel)
+    {
+        return juce::jlimit (0.0f, 1.0f, (travel - ATK_AUTO_END) / (100.0f - ATK_AUTO_END));
+    }
+
+    static float attackMsForTravel (float travel)
+    {
+        if (attackIsAuto (travel)) return ATK_MIN_MS;
+        // Exponential, because the measured crest is linear in log(attack): a
+        // linear taper would spend most of the knob on nothing.
+        return ATK_MIN_MS * std::pow (ATK_MAX_MS / ATK_MIN_MS, attackTravelNorm (travel));
+    }
+
+    static float lookaheadBlendForTravel (float travel)
+    {
+        if (attackIsAuto (travel)) return 1.0f;
+        return std::pow (1.0f - attackTravelNorm (travel), 0.7f);
+    }
+
     // Smoothstep rather than a straight ramp, so the knob has no gradient
     // discontinuity where the wall starts. Both files call this one function
     // instead of keeping two copies of the law.
@@ -66,6 +107,9 @@ public:
 
     // Smooth attack mode: interpolates gain across the lookahead window
     bool smoothAttack = true;
+    // 1 = full pre-emption (AUTO), 0 = the gain aligned with the audio it is
+    // applied to. Set from the ATTACK travel; see lookaheadBlendForTravel.
+    float lookaheadBlend = 1.0f;
 
     RVoxCompressor() = default;
 
@@ -475,6 +519,12 @@ public:
                 // back toward unity over the window, then snapped down again as
                 // the peak landed, which is a gain ripple rather than a ramp.
                 float windowMinDB = gainMin.pushAndGet(totalGainDB);
+                // Withdrawing the pre-emption is what lets a transient through.
+                // Both terms read the same delay line, so the latency is
+                // untouched and only the choice of gain changes.
+                if (lookaheadBlend < 0.999f)
+                    windowMinDB = gainDBBuffer[readPos]
+                                + lookaheadBlend * (windowMinDB - gainDBBuffer[readPos]);
 
                 // Stage 1: primary envelope smoothing
                 smoothedGainDB = smoothCoeff1 * smoothedGainDB + (1.0f - smoothCoeff1) * windowMinDB;

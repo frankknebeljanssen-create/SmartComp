@@ -670,6 +670,56 @@ int main (int argc, char** argv)
         std::printf ("\n");
     }
 
+    // The ATTACK control. Two things have to hold: it must measurably do
+    // something across its WHOLE travel — a control that is dead in half its
+    // range is a bug — and it must not move the loudness, or "more punch" would
+    // win the way "louder" always wins.
+    {
+        std::vector<float> bL, bR, vL, vR;
+        makeBreakbeat (bL, bR, 20.0); makeVocal (vL, vR, 20.0);
+        auto run = [&] (const std::vector<float>& L, const std::vector<float>& R,
+                        float knob, float travel, double& crest, double& loud) {
+            SmartCompProcessor p;
+            p.setPlayConfigDetails (2, 2, SR, BLOCK);
+            p.prepareToPlay (SR, BLOCK);
+            p.apvts.getParameter ("mix")->setValueNotifyingHost (1.0f);
+            p.apvts.getParameter ("gate")->setValueNotifyingHost (0.0f);
+            p.apvts.getParameter ("comp")->setValueNotifyingHost (knob / 36.0f);
+            p.apvts.getParameter ("attack")->setValueNotifyingHost (travel / 100.0f);
+            p.rideMode.store (false);
+            std::vector<float> out;
+            juce::AudioBuffer<float> buf (2, BLOCK); juce::MidiBuffer midi;
+            for (int off = 0; off + BLOCK <= (int) L.size(); off += BLOCK) {
+                std::copy (L.begin()+off, L.begin()+off+BLOCK, buf.getWritePointer(0));
+                std::copy (R.begin()+off, R.begin()+off+BLOCK, buf.getWritePointer(1));
+                p.processBlock (buf, midi);
+                const float* o = buf.getReadPointer (0);
+                out.insert (out.end(), o, o + BLOCK);
+            }
+            double sum = 0.0, pk = 0.0; int n = 0;
+            for (int i = (int)(6.0*SR); i < (int) out.size(); ++i) {
+                sum += (double) out[i]*out[i]; pk = std::max (pk, std::abs ((double) out[i])); ++n;
+            }
+            loud = dB (std::sqrt (sum / std::max (n,1)));
+            crest = dB (pk) - loud;
+        };
+
+        std::printf ("ATTACK — output crest (transient over body) and loudness\n");
+        std::printf ("  %-8s %7s | %8s %8s | %8s %8s | %8s\n",
+                     "travel", "ms", "BBk24 cr", "BBk24 ld", "BBk36 cr", "BBk36 ld", "VOk24 cr");
+        for (float tr : { 0.0f, 6.0f, 25.0f, 50.0f, 75.0f, 100.0f }) {
+            double c1, l1, c2, l2, c3, l3;
+            run (bL, bR, 24.0f, tr, c1, l1);
+            run (bL, bR, 36.0f, tr, c2, l2);
+            run (vL, vR, 24.0f, tr, c3, l3);
+            std::printf ("  %-8.0f %7.2f | %8.2f %8.2f | %8.2f %8.2f | %8.2f\n",
+                         tr, RVoxCompressor::attackMsForTravel (tr), c1, l1, c2, l2, c3);
+        }
+        std::printf ("  AUTO is travel 0..%.0f. The k36 column is the wall, where the\n",
+                     (double) RVoxCompressor::ATK_AUTO_END);
+        std::printf ("  limiter takes back what a slow attack lets through.\n\n");
+    }
+
     // Exactly the A/B a user performs: engage the plugin, switch TRUE LEVEL on,
     // then hit Bypass. Both sides are measured over the SAME whole signal with
     // no active-window selection, because selecting windows per side compares
