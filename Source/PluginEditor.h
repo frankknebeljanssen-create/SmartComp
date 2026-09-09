@@ -104,7 +104,7 @@ public:
 
     // ADV panel
     bool advOpen = false;
-    static constexpr int ADV_PANEL_H = 319;  // tlGap(12) + tl(155) + panelGap(12) + panel(170) - overlap(10)
+    static constexpr int ADV_PANEL_H = 359;  // tlGap(12) + tl(155) + panelGap(12) + panel(170) - overlap(10)
     juce::Slider inTrimSlider, scHpfSlider, attackSlider, releaseSlider;
     juce::Label inTrimLabel, scHpfLabel, attackLabel, releaseLabel;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment>

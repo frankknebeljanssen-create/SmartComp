@@ -41,6 +41,11 @@ public:
     std::atomic<float> limiterGainReductionDB { 0.0f };
     std::atomic<float> outputPeakL { 0.0f }, outputPeakR { 0.0f };
     std::atomic<float> inputPeakL { 0.0f }, inputPeakR { 0.0f };
+    // What the release actually is right now, plus the host's grid, so the
+    // groove display draws the truth instead of a second copy of the law.
+    std::atomic<float> effectiveReleaseMs { 60.0f };
+    std::atomic<float> hostBpm { 0.0f };        // 0 = host reports none
+    std::atomic<float> hostBarPhase { 0.0f };   // 0..1 through the current 4/4 bar
     std::atomic<bool> gateIsOpen { true };
     std::atomic<float> gateReductionDB { 0.0f };  // 0..-30, how hard the gate is currently attenuating
 

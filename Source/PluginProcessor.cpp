@@ -579,6 +579,23 @@ void SmartCompProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Mi
         float relFastMs = 40.0f + (1.0f - compAmt01) * 40.0f;  // 40-80ms: tighter at high comp
         float relSlowMs = 400.0f + (1.0f - compAmt01) * 600.0f;  // 400-1000ms: shorter at high comp
 
+        // Host grid, read once: the release sync uses it and the groove display
+        // draws against it, so they cannot disagree about the tempo.
+        {
+            float bpmNow = 0.0f, phaseNow = 0.0f;
+            if (auto* ph = getPlayHead())
+                if (auto pos = ph->getPosition()) {
+                    if (auto t = pos->getBpm())
+                        if (*t > 20.0 && *t < 400.0) bpmNow = (float) *t;
+                    if (auto q = pos->getPpqPosition()) {
+                        const double bar = std::fmod(*q, 4.0);   // one 4/4 bar
+                        phaseNow = (float) ((bar < 0.0 ? bar + 4.0 : bar) / 4.0);
+                    }
+                }
+            hostBpm.store(bpmNow);
+            hostBarPhase.store(phaseNow);
+        }
+
         // RELEASE locked to the session grid. The note sets the fast release;
         // the slow one keeps its existing ratio to it, so the program-dependent
         // character survives and only the timing is anchored. Falls back to
@@ -591,11 +608,7 @@ void SmartCompProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Mi
             const float authority = RVoxCompressor::attackAuthorityForKnob(compAmt01 * 36.0f);
             const float frac = RVoxCompressor::releaseNoteFraction(relNote) * authority;
             if (frac > 0.0f) {
-                double bpm = 120.0;
-                if (auto* ph = getPlayHead())
-                    if (auto pos = ph->getPosition())
-                        if (auto t = pos->getBpm())
-                            if (*t > 20.0 && *t < 400.0) bpm = *t;
+                const double bpm = (hostBpm.load() > 0.0f) ? (double) hostBpm.load() : 120.0;
                 const float beatMs = (float) (60000.0 / bpm);
                 const float ratio = relSlowMs / juce::jmax(1.0f, relFastMs);
                 const float syncedFast = beatMs * frac;
@@ -615,6 +628,7 @@ void SmartCompProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Mi
         float kneeW = 6.0f;
         compressor.setAttackTime(attackMs / 1000.0f);
         compressor.setReleaseTimes(relFastMs / 1000.0f, relSlowMs / 1000.0f);
+        effectiveReleaseMs.store(relFastMs);
         compressor.userKneeWidth = kneeW;
         compressor.maxGainReductionDB = 36.0f;
         compressor.ratioMultiplier = 1.0f;

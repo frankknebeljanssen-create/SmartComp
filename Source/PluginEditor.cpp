@@ -516,7 +516,7 @@ void SmartCompEditor::recalcLayout()
     L.tlH = 155;
     L.tlW = L.w - 32;
     L.panelY = L.tlY + L.tlH + 12;
-    L.panelH = 140;
+    L.panelH = 180;
     L.barW = 200;
     L.barX = L.contentCx - L.barW / 2 - 30;
     L.readoutX = L.w - 16 - 10 - 46;
@@ -919,14 +919,15 @@ void SmartCompEditor::paint(juce::Graphics& g)
         g.setColour(C::border); g.drawRoundedRectangle(r, 8.0f, 1.0f);
     }
 
-    // ADV button — left side, tall enough to read as a panel toggle
+    // ADV button — left side. Nearly square rather than tall: it used to
+    // inherit the height of the three stacked pills that used to live here, and
+    // a stray +6 left it sitting low in its card rather than centred in it.
     {
-        int pillW2 = 46, pillH2 = 20, pillGap2 = 4;
-        int rightTotalH = pillH2 * 3 + pillGap2 * 2;  // 68px
-        int pillX2 = 16 + 12;
-        int pillY2 = kcY + (kcH - rightTotalH) / 2 + 6;
+        const int pillW2 = 46, pillH2 = 40;
+        const int pillX2 = 16 + 12;
+        const int pillY2 = kcY + (kcH - pillH2) / 2;
 
-        advToggleRect = juce::Rectangle<int>(pillX2, pillY2, pillW2, rightTotalH);
+        advToggleRect = juce::Rectangle<int>(pillX2, pillY2, pillW2, pillH2);
         g.setColour(advOpen ? C::accent.withAlpha(0.18f) : juce::Colour(0xff1e2330));
         g.fillRoundedRectangle(advToggleRect.toFloat(), 5.0f);
         g.setColour(advOpen ? C::accent.withAlpha(0.5f) : juce::Colour(0xff444a58));
@@ -969,7 +970,7 @@ void SmartCompEditor::paint(juce::Graphics& g)
         // Knob area: centred in the panel now that the preset row is gone
         int knobSzAdv = 56;
         int knobBlockH = knobSzAdv + 2 + 14;  // knob + gap + label
-        int knobTopY = panelY + (panelH - knobBlockH) / 2 + 6;
+        int knobTopY = panelY + 30;   // near the top; the groove strip takes the rest
         int knobCenterY = knobTopY + knobSzAdv / 2;
 
         // Knob labels + knobs. The left 66px used to hold the Delta and A/B
@@ -986,6 +987,72 @@ void SmartCompEditor::paint(juce::Graphics& g)
         g.drawText("SC HPF", knobAreaLeft + colW, row1Y - 14, colW, 12, juce::Justification::centred);
         g.drawText("ATTACK", knobAreaLeft + colW * 2, row1Y - 14, colW, 12, juce::Justification::centred);
         g.drawText("RELEASE", knobAreaLeft + colW * 3, row1Y - 14, colW, 12, juce::Justification::centred);
+
+        // GROOVE STRIP — one 4/4 bar wide, with the release drawn against the
+        // grid it is locked to. The curve is the gain recovering after a hit,
+        // taken from the release the processor is actually using rather than
+        // from a second copy of the law here, so the picture cannot drift away
+        // from the sound. Doubling the note visibly doubles the curve's reach
+        // across the bar, which is the thing that is hard to hear and easy to
+        // see.
+        {
+            const int stripH = 40;
+            const int stripY = panelY + panelH - stripH - 8;
+            const int stripX = knobAreaLeft;
+            const int stripW = knobAreaW2;
+
+            g.setColour(juce::Colour(0xff0f1218));
+            g.fillRoundedRectangle((float)stripX, (float)stripY, (float)stripW, (float)stripH, 3.0f);
+            g.setColour(C::border);
+            g.drawRoundedRectangle((float)stripX, (float)stripY, (float)stripW, (float)stripH, 3.0f, 1.0f);
+
+            const float bpm = processor.hostBpm.load();
+            const float beatMs = 60000.0f / (bpm > 0.0f ? bpm : 120.0f);
+            const float barMs = beatMs * 4.0f;
+            const float relMs = juce::jmax(1.0f, processor.effectiveReleaseMs.load());
+
+            // Beat grid: the downbeat brighter than the rest.
+            for (int b = 0; b < 4; ++b) {
+                const float bx = stripX + stripW * (b / 4.0f);
+                g.setColour(C::label.withAlpha(b == 0 ? 0.55f : 0.28f));
+                g.drawLine(bx, (float)stripY + 3.0f, bx, (float)(stripY + stripH) - 3.0f,
+                           b == 0 ? 1.2f : 0.7f);
+            }
+
+            // The recovery after each beat's hit: ducked at the hit, climbing
+            // back with the release time constant.
+            juce::Path env;
+            const int steps = 160;
+            for (int i = 0; i <= steps; ++i) {
+                const float t = barMs * i / (float)steps;
+                const float sinceHit = std::fmod(t, beatMs);
+                const float recovered = 1.0f - std::exp(-sinceHit / relMs);
+                const float px = stripX + stripW * i / (float)steps;
+                const float py = (float)(stripY + stripH) - 4.0f
+                               - recovered * (float)(stripH - 10);
+                if (i == 0) env.startNewSubPath(px, py); else env.lineTo(px, py);
+            }
+            g.setColour(C::accent.withAlpha(0.85f));
+            g.strokePath(env, juce::PathStrokeType(1.6f));
+
+            // Where the transport is, if the host is running.
+            if (bpm > 0.0f) {
+                const float px = stripX + stripW * juce::jlimit(0.0f, 1.0f, processor.hostBarPhase.load());
+                g.setColour(C::white.withAlpha(0.5f));
+                g.drawLine(px, (float)stripY + 2.0f, px, (float)(stripY + stripH) - 2.0f, 1.0f);
+            }
+
+            // What it is, in words and in milliseconds, so the doubling reads
+            // numerically as well as visually.
+            const int relNote = (int)std::lround(processor.apvts.getRawParameterValue("release")->load());
+            juce::String txt = juce::String(RVoxCompressor::releaseNoteName(relNote))
+                             + "  " + juce::String((int)relMs) + " ms";
+            if (bpm > 0.0f) txt += "  @ " + juce::String((int)bpm) + " BPM";
+            g.setFont(juce::Font("Arial", 9.0f, juce::Font::plain));
+            g.setColour(C::label.withAlpha(0.7f));
+            g.drawText(txt, stripX + 6, stripY + stripH - 13, stripW - 12, 11,
+                       juce::Justification::centredRight);
+        }
 
         gateSlider.setVisible(true); gateLabel.setVisible(true);
         scHpfSlider.setVisible(true); scHpfLabel.setVisible(true);
@@ -1030,8 +1097,10 @@ void SmartCompEditor::paint(juce::Graphics& g)
             float schpfHz = processor.apvts.getRawParameterValue("schpf")->load();
             if (schpfHz > 0.5f) {
                 auto sr = unscale(scHpfSlider.getBounds());
-                int curveW = 74, curveH = 34;
-                int curveX = sr.getRight() + 10;
+                // Narrower and tucked closer since the row went to four columns:
+                // at 74 wide it ran into the ATTACK knob.
+                int curveW = 48, curveH = 30;
+                int curveX = sr.getRight() + 6;
                 int curveY = sr.getCentreY() - curveH / 2;
                 if (curveX + curveW < knobAreaRight) {
                     g.setColour(juce::Colour(0xff14171d));
@@ -1906,7 +1975,7 @@ void SmartCompEditor::resized()
         int colW = knobAreaW2 / 4;
 
         int knobBlockH = advKnobSz + 2 + 14;
-        int knobTopY = panelTopY + (L.panelH - knobBlockH) / 2 + 6;
+        int knobTopY = panelTopY + 30;
 
         auto placeAdvKnob = [&](juce::Slider& sl, juce::Label& l, int col) {
             int kx = knobAreaLeft + col * colW + (colW - advKnobSz) / 2;
