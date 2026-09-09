@@ -14,6 +14,8 @@
 #include "../Source/PluginProcessor.h"
 #include <cstdio>
 #include <cmath>
+#include <vector>
+#include <algorithm>
 
 static constexpr double SR = 44100.0;
 static constexpr int BS = 512;
@@ -67,6 +69,52 @@ int main() {
     for (int step = 0; step < 5; ++step) { run(20, false);
         std::printf("  after %2d blocks: knob %5.2f  (band %.1f..%.1f)\n",
             (step+1)*20, compVal(), p.sweetSpotLow.load(), p.sweetSpotHigh.load()); }
+
+    // The band is a promise about gain reduction, not about knob position: its
+    // edges are meant to be where the compressor delivers 3 and 5 dB. Nothing
+    // used to check that, which is how the estimator drifted to a threshold
+    // depth of 30 dB against the 18 dB the compressor actually uses without any
+    // test noticing — the knob still landed inside its own band, the band was
+    // simply in the wrong place, and AUTO delivered about 1.3 dB where it
+    // advertised 3 to 5.
+    {
+        std::printf("\n[1b] Does the band mean what it says? GR delivered at each edge\n");
+        // The band's targets are stated as "GR on peaks", so read the peaks:
+        // the 95th percentile of the per-block reduction over a settled run.
+        // Sampling the smoothed value at one instant instead reported 0.00 dB
+        // at both band edges, because on this material that instant lands in a
+        // gap between words as often as not.
+        // A fresh processor per reading. Reusing one carried the auto-threshold's
+        // adaptation from the previous knob setting into the next, which made
+        // the curve depend on the order the knobs were measured in.
+        auto grAtKnob = [](float knob) {
+            SmartCompProcessor q;
+            q.prepareToPlay(SR, BS);
+            q.rideMode.store(false);
+            q.apvts.getParameter("comp")->setValueNotifyingHost(knob / 36.0f);
+            juce::AudioBuffer<float> b(2, BS);
+            juce::MidiBuffer m;
+            long long save = idx; idx = 0;
+            for (int i = 0; i < 200; ++i) {            // settle
+                fill(b.getWritePointer(0), b.getWritePointer(1), BS);
+                q.processBlock(b, m);
+            }
+            std::vector<float> gr;
+            for (int i = 0; i < 200; ++i) {
+                fill(b.getWritePointer(0), b.getWritePointer(1), BS);
+                q.processBlock(b, m);
+                gr.push_back(q.compGainReductionDB.load());
+            }
+            idx = save;
+            std::sort(gr.begin(), gr.end());
+            return gr[(size_t)(0.95 * (gr.size() - 1))];
+        };
+        const float lo = p.sweetSpotLow.load(), hi = p.sweetSpotHigh.load();
+        const float grLo = grAtKnob(lo), grHi = grAtKnob(hi);
+        std::printf("  knob %5.2f (band low)  -> %5.2f dB GR   (should be ~3.0)\n", lo, grLo);
+        std::printf("  knob %5.2f (band high) -> %5.2f dB GR   (should be ~5.0)\n", hi, grHi);
+        p.rideMode.store(true);
+    }
 
     std::printf("\n[2] Drag to 34 (crush) with AUTO on: must hold while dragging, "
                 "then glide back visibly on release\n");

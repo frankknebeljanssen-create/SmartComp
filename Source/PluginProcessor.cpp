@@ -344,25 +344,26 @@ void SmartCompProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Mi
         // The detector is RMS-dominant (peak blend 0.08-0.20), so it sees far
         // less crest than the waveform does; the 0.4 factor is an approximation
         // of that, not a derived constant.
-        float detectorCrest = juce::jlimit(2.0f, 8.0f, smoothedCrestDB * 0.4f);
+        // Calibrated, not derived. With the law above now exact, this is the one
+        // remaining approximation, and it was carrying the error the wrong depth
+        // used to hide: measured against the real compressor on a test vocal,
+        // 3 dB of peak reduction arrives at knob 8.1 and 5 dB at knob 11.4, and
+        // reproducing those two points needs 8.87 dB of detector crest against
+        // the 4.15 this produced. The old 8 dB ceiling would have clipped the
+        // right answer even so. auto_probe's case [1b] measures both crossings,
+        // so this cannot drift again unnoticed.
+        float detectorCrest = juce::jlimit(2.0f, 12.0f, smoothedCrestDB * 0.855f);
 
+        // Ask the compressor what its own law delivers instead of reproducing it
+        // here. The reproduction had drifted on three counts — threshold depth
+        // 30 dB against the 18 dB actually used, no slam term, and a flat knee
+        // instead of the adaptive one — while its comments asserted a match on
+        // all three. It over-predicted the reduction, so the search found the
+        // 3 and 5 dB crossings too low on the knob and AUTO parked short of the
+        // compression it advertises.
         auto estimateGR = [&](float comp) -> float {
-            float compAmt = comp / 36.0f;
-            float depth = -6.0f + compAmt * 30.0f;          // matches the compressor
-            float ratio = 1.0f + compAmt * compAmt * 14.0f; // matches MAX_RATIO - 1
-            float aboveThresh = depth + detectorCrest;
-            float kneeDB = 6.0f;                            // matches compressor knee
-            float halfKnee = kneeDB / 2.0f;
-
-            if (aboveThresh < -halfKnee)
-                return 0.0f;
-            else if (aboveThresh > halfKnee)
-                return aboveThresh * (1.0f - 1.0f / ratio);
-            else {
-                float t = (aboveThresh + halfKnee) / kneeDB;
-                float tSat = t * t * (3.0f - 2.0f * t);
-                return tSat * aboveThresh * (1.0f - 1.0f / ratio);
-            }
+            return RVoxCompressor::predictGainReductionDB(comp / 36.0f, detectorCrest,
+                                                          compressor.userKneeWidth);
         };
 
         // Search for comp values that give target GR amounts

@@ -45,6 +45,25 @@ public:
         return w * w * (3.0f - 2.0f * w);
     }
 
+    // What the compression law delivers in steady state, for a detector sitting
+    // crestDB above the programme average it is referenced to.
+    //
+    // The sweet-spot search in PluginProcessor calls this rather than keeping a
+    // second copy of the curve. The copy had drifted: it used a threshold depth
+    // of 30 dB where the compressor uses 18, ignored the slam term, and held the
+    // knee flat instead of adapting it — while the comment beside it claimed all
+    // three matched. AUTO therefore aimed with a bent sight and parked lower
+    // than the reduction it advertised.
+    static float predictGainReductionDB (float compAmount, float crestDB, float kneeWidth)
+    {
+        const float depthDB = -6.0f + compAmount * 18.0f
+                            + slamForAmount (compAmount) * SLAM_DEPTH_DB;
+        const float ratio = 1.0f + compAmount * compAmount * (MAX_RATIO - 1.0f);
+        const float aboveThresh = depthDB + crestDB;
+        const float kneeScale = juce::jlimit (0.7f, 1.3f, 1.3f - std::abs (aboveThresh) / 24.0f);
+        return computeGainReduction (aboveThresh, 0.0f, ratio, kneeWidth * kneeScale);
+    }
+
     // Smooth attack mode: interpolates gain across the lookahead window
     bool smoothAttack = true;
 
@@ -569,7 +588,7 @@ private:
     }
 
     // Warm soft-knee with smoothstep S-curve
-    float computeGainReduction(float inputDB, float thresholdDB, float ratio, float kneeDB) const
+    static float computeGainReduction(float inputDB, float thresholdDB, float ratio, float kneeDB)
     {
         float halfKnee = kneeDB / 2.0f;
         float output;
